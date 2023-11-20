@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"name": "dmx_attiny",
+			"path": "."
+		}
+	],
+	"settings": {}
+}
