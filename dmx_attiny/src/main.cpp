@@ -2,22 +2,6 @@
 #include <SPI.h>
 #include <buffer.h>
 
-// DMX_TX -> PB2 - #7
-#define DMX_TX_BREAK_PIN PIN_PA5 // #3
-
-// DMX_RX -> PB3 - #6
-#define DMX_RX_CABLE_DISCONNECT_PIN PIN_PA4 // #2
-
-int currentOutputDmxChannel;
-unsigned long dmxOutputBreakStartAt;
-
-uint8_t writeBufferMemo[512];
-DmxBuffer DmxTxBuffer(writeBufferMemo, 512);
-
-// SPI MOSI  -> PA1 - #11
-// SPI MISO  -> PA2 - #12
-// SPI CLOCK -> PA3 - #13
-
 #define MOSI_bp 1
 #define MOSI_bm (1 << MOSI_bp)
 #define MISO_bp 2
@@ -27,126 +11,156 @@ DmxBuffer DmxTxBuffer(writeBufferMemo, 512);
 #define SS_bp 4
 #define SS_bm (1 << SS_bp)
 
-uint8_t spiDmxOutputShouldBreak;
-uint8_t spiDmxOutputBreakPosition;
-uint8_t spiDataReady;
-int8_t spiDataPosition;
-uint16_t spiDataInputFlags;
+#define DATA_CTRL_STUFF_BYTE 0xCA
+#define DATA_CTRL_TRANSMISSION_BEGIN 0xF0
+#define DATA_CTRL_TRANSMISSION_END 0xF1
+#define DATA_CTRL_1BYTE_DATA 0xE0
+#define DATA_CTRL_2BYTE_DATA 0xE1
+#define DATA_CTRL_1BYTE_ZERO_DATA 0xD0
+#define DATA_CTRL_2BYTE_ZERO_DATA 0xD1
 
-#define DEVICE_UNIVERSE_ID 0
+// We should always run at 10Mhz
+#define CLK_PER (10 * 1000 * (uint32_t)1000)
 
-#define SPI_DATA_START_BIT (1 << 7)
-#define SPI_DATA_WRITE_BITS (3 << 1)
+#define DMX_OUTPUT_BREAK_PIN PIN_PA5
 
-uint8_t getSpiUniverseDataMSB(uint8_t universeId) {
-  return (spiDataInputFlags >> (12 + universeId)) & 1;
-}
+#define SERIAL_TRANSMIT_POSITION_UNKNOWN -1
+#define SERIAL_TRANSMIT_POSITION_BREAK -2
 
-uint8_t getSpiUniverseHasData(uint8_t universeId) {
-  return spiDataInputFlags & (1 << (3 + (universeId * 2)));
-}
+long dmxOutputBreakStartedAt;
+long dmxOutputInactiveAt;
+int16_t serialTransmitPosition;
+uint8_t transmitDmxBufferArr[512];
+DataBuffer TransmitDmxBuffer(transmitDmxBufferArr, 512);
 
-uint8_t getSpiUniverseHasBreak(uint8_t universeId) {
-  return spiDataInputFlags & (1 << (4 + (universeId * 2)));
-}
-
-uint8_t getSpiDmxDataPosition() {
-  uint8_t position = 0;
-
-  for (uint8_t universeId = 0; universeId < DEVICE_UNIVERSE_ID; universeId++) {
-    if (getSpiUniverseHasData(universeId)) {
-      position++;
-    }
-  }
-
-  return position;
-}
-
-uint8_t canWriteToSPI() {
-  return ((spiDataInputFlags >> 8) & SPI_DATA_WRITE_BITS) == (DEVICE_UNIVERSE_ID << 1);
-}
-
-void spiReadData() {
-  if(SPI0.INTFLAGS & SPI_RXCIF_bm) {
-    uint8_t data = SPI0.DATA;
-
-    if (data & SPI_DATA_START_BIT) {
-      spiDataPosition = 0;
-      spiDataReady = 0;
-    }
-
-    if (spiDataPosition == 0) {
-      spiDataInputFlags = ((uint16_t)data) << 8;
-      spiDataPosition++;
-    } else if (spiDataPosition == 1) {
-      spiDataInputFlags = spiDataInputFlags | data;
-      spiDataPosition++;
-
-      if (getSpiUniverseHasBreak(DEVICE_UNIVERSE_ID) && dmxOutputBreakStartAt == 0) {
-        spiDmxOutputBreakPosition = DmxTxBuffer.used();
-        spiDmxOutputShouldBreak = 1;
-      }
-    } else if (getSpiUniverseHasData(DEVICE_UNIVERSE_ID) && spiDataPosition == getSpiDmxDataPosition()) {
-      uint8_t spiDataDmxValue = data | (getSpiUniverseDataMSB(DEVICE_UNIVERSE_ID) << 7);
-
-      if (DmxTxBuffer.canEnqueue()) {
-        DmxTxBuffer.enqueue(spiDataDmxValue);
-      }
-
-      spiDataPosition = -1;
-      spiDataReady = 1;
-    } else if (spiDataPosition > 1 && spiDataPosition < 6) {
-      spiDataPosition++;
-    }
-  }
-}
-
-void dmxTxData() {
-  if (DmxTxBuffer.used() && Serial.availableForWrite() > 0) {
-    if (spiDmxOutputShouldBreak == 0 || spiDmxOutputBreakPosition > 0) {
-      Serial.write(DmxTxBuffer.dequeue());
-      spiDmxOutputBreakPosition--;
-    }
-  }
-
-  if (spiDmxOutputBreakPosition == 0 && spiDmxOutputShouldBreak && dmxOutputBreakStartAt == 0) {
-    uint8_t usedBytes = SERIAL_TX_BUFFER_SIZE - Serial.availableForWrite();
-
-    if (usedBytes <= 1) {
-      Serial.flush();
-      pinModeFast(DMX_TX_BREAK_PIN, OUTPUT);
-      digitalWriteFast(DMX_TX_BREAK_PIN, LOW);
-      dmxOutputBreakStartAt = micros();
-    }
-  }
-
-  if (dmxOutputBreakStartAt > 0 && (micros() - dmxOutputBreakStartAt) >= 88) {
-    pinModeFast(DMX_TX_BREAK_PIN, INPUT);
-    dmxOutputBreakStartAt = 0;
-    spiDmxOutputShouldBreak = 0;
-  }
-}
+uint8_t spiReceivedPreviousData;
+uint8_t transmitSpiBufferArr[512];
+DataBuffer TransmitSpiBuffer(transmitSpiBufferArr, 512);
 
 void setup() {
-  spiDataPosition = -1;
-  spiDataReady = 0;
-  currentOutputDmxChannel = -1;
-  dmxOutputBreakStartAt = 0;
-  spiDmxOutputBreakPosition = 0;
-  spiDmxOutputShouldBreak = 0;
-  
-  PORTA.DIRSET = MISO_bm;
-  SPI0.CTRLB = SPI_MODE_2_gc;
-  SPI0.CTRLA = !SPI_MASTER_bm | // as Slave
-                SPI_ENABLE_bm; // Start
+  // Makes tiny run at 10Mhz (20Mhz OSC / 2)
+  // Set clock divider to 2.
+  // Be sure that:
+  // 1. VDD is at least 3V. Lower voltages can cause problems
+  // 2. Fuse is set to 20Mhz. (Factory default)
+  CLKCTRL_MCLKCTRLB = 1;
 
-  pinMode(DMX_TX_BREAK_PIN, INPUT);
-  pinMode(DMX_RX_CABLE_DISCONNECT_PIN, INPUT);
+  uint8_t bodLevel = BOD.CTRLB & 0b00000111;
+  uint8_t sigrowVal;
 
+  if (bodLevel == 0x2) {
+    // 20Mhz OSC error at 3V (BOD Level 2)
+    sigrowVal = SIGROW.OSC20ERR3V;
+  } else if (bodLevel == 0x7) {
+    // 20Mhz OSC error at 5V (BOD Level 7)
+    sigrowVal = SIGROW.OSC20ERR5V;
+  }
+
+  serialTransmitPosition = SERIAL_TRANSMIT_POSITION_UNKNOWN;
+  dmxOutputBreakStartedAt = 0;
+  dmxOutputInactiveAt = 0;
+
+  pinMode(DMX_OUTPUT_BREAK_PIN, INPUT);
+
+  // Serial lib is buggy. Ignore this baud rate.
   Serial.begin(250000, SERIAL_8N2);
+
+  // Fix baud rate
+  // convert baud rate to register value
+  int32_t baud_reg_val = (8 * CLK_PER) / 250000;
+
+  // adjust baud rate according to OSC error rate
+  baud_reg_val *= (1024 + sigrowVal);
+  baud_reg_val /= 1024;
+
+  USART0.BAUD = (int16_t) baud_reg_val;
+
+  PORTA.DIRSET = MISO_bm;
+  SPI0.CTRLB = SPI_BUFEN_bm | SPI_BUFWR_bm;
+  SPI0.CTRLA = SPI_ENABLE_bm; // Start
 }
 
 void loop() {
-  spiReadData();
-  dmxTxData();
+  if(SPI0.INTFLAGS & SPI_RXCIF_bm) {
+    uint8_t data = SPI0.DATA;
+
+    if (TransmitSpiBuffer.used() > 0) {
+      uint8_t sendData = TransmitSpiBuffer.get();
+
+      if (SPI0.INTFLAGS & SPI_DREIF_bm) {
+        SPI0.DATA = sendData;
+        TransmitSpiBuffer.dequeue();
+      }
+    }
+
+    if (data > 0) {
+      if (spiReceivedPreviousData == DATA_CTRL_STUFF_BYTE) {
+        if (data == DATA_CTRL_TRANSMISSION_BEGIN) {
+          serialTransmitPosition = SERIAL_TRANSMIT_POSITION_BREAK;
+        } else if (data == DATA_CTRL_1BYTE_DATA) {
+          TransmitDmxBuffer.enqueue(DATA_CTRL_STUFF_BYTE);
+        } else if (data == DATA_CTRL_2BYTE_DATA) {
+          TransmitDmxBuffer.enqueue(DATA_CTRL_STUFF_BYTE);
+          TransmitDmxBuffer.enqueue(DATA_CTRL_STUFF_BYTE);
+        } else if (data == DATA_CTRL_1BYTE_ZERO_DATA) {
+          TransmitDmxBuffer.enqueue(0);
+        } else if (data == DATA_CTRL_2BYTE_ZERO_DATA) {
+          TransmitDmxBuffer.enqueue(0);
+          TransmitDmxBuffer.enqueue(0);
+        }
+      } else if (data != DATA_CTRL_STUFF_BYTE) {
+        TransmitDmxBuffer.enqueue(data);
+      }
+
+      spiReceivedPreviousData = data;
+    }
+  }
+
+  if (serialTransmitPosition == SERIAL_TRANSMIT_POSITION_UNKNOWN) {
+    TransmitDmxBuffer.dequeue();
+  } else if (serialTransmitPosition == SERIAL_TRANSMIT_POSITION_BREAK) {
+    if (SERIAL_TX_BUFFER_SIZE - Serial.availableForWrite() <= 1 && dmxOutputBreakStartedAt == 0) {
+      Serial.flush();
+      pinModeFast(DMX_OUTPUT_BREAK_PIN, OUTPUT);
+      dmxOutputBreakStartedAt = micros();
+    } else if (dmxOutputBreakStartedAt > 0 && micros() - dmxOutputBreakStartedAt >= 88) {
+      pinModeFast(DMX_OUTPUT_BREAK_PIN, INPUT);
+
+      if (micros() - dmxOutputBreakStartedAt >= 96) {
+        serialTransmitPosition = 0;
+        dmxOutputBreakStartedAt = 0;
+      }
+    }
+  } else {
+    if (serialTransmitPosition == 0) {
+      Serial.write(0);
+      serialTransmitPosition++;
+    }
+
+    if (TransmitDmxBuffer.used() > 0) {
+      if (serialTransmitPosition >= 513) {
+        TransmitDmxBuffer.dequeue();
+      } else if (Serial.availableForWrite() > 0) {
+        Serial.write(TransmitDmxBuffer.dequeue());
+        serialTransmitPosition++;
+      }
+    }
+
+    if (SERIAL_TX_BUFFER_SIZE - Serial.availableForWrite() <= 1) {
+      if (dmxOutputInactiveAt == 0) {
+        dmxOutputInactiveAt = micros();
+      } else if (micros() - dmxOutputInactiveAt >= 88) {
+        serialTransmitPosition = SERIAL_TRANSMIT_POSITION_UNKNOWN;
+        dmxOutputInactiveAt = 0;
+      }
+    } else {
+      dmxOutputInactiveAt = 0;
+    }
+  }
+
+  if (serialTransmitPosition >= 513 && TransmitSpiBuffer.available() >= 2) {
+    serialTransmitPosition = SERIAL_TRANSMIT_POSITION_UNKNOWN;
+    TransmitSpiBuffer.enqueue(DATA_CTRL_STUFF_BYTE);
+    TransmitSpiBuffer.enqueue(DATA_CTRL_TRANSMISSION_END);
+  }
 }

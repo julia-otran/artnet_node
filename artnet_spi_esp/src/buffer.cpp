@@ -39,6 +39,12 @@ void DataBuffer::enqueue(uint8_t data) {
     }
 }
 
+void DataBuffer::enqueueIfValid(uint8_t data) {
+    if (data > 0) {
+        enqueue(data);
+    }
+}
+
 uint8_t DataBuffer::dequeue() {
     uint8_t result = buffer[dequeuePosition];
 
@@ -53,5 +59,5 @@ uint8_t DataBuffer::dequeue() {
 }
 
 uint8_t DataBuffer::get() {
-
+    return buffer[dequeuePosition];
 }

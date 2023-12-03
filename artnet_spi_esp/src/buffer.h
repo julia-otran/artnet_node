@@ -9,10 +9,10 @@ class DataBuffer {
         int used();
         int available();
         void enqueue(uint8_t data);
+        void enqueueIfValid(uint8_t data);
         uint8_t dequeue();
         uint8_t get();
     private:
         uint16_t dequeuePosition, enqueuePosition, usedCount, totalSize;
         uint8_t *buffer;
 };
-

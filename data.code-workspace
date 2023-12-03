@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "dmx_attiny"
+		},
+		{
+			"name": "artnet_spi_esp",
+			"path": "artnet_spi_esp"
+		}
+	],
+	"settings": {}
+}
