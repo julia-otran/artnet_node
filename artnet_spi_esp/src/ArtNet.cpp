@@ -59,7 +59,7 @@ namespace art_net {
         sendPacketFunc = func;
     }
 
-    void ArtNet::setDmxDataCallback(std::function<void(uint8_t, uint8_t*, uint16_t)> func) {
+    void ArtNet::setDmxDataCallback(std::function<void(uint8_t, uint8_t, uint8_t*, uint16_t)> func) {
         dmxDataCallback = func;
     }
 
@@ -95,7 +95,7 @@ namespace art_net {
             return;
         }
 
-        dmxDataCallback(universe, packet->Data, dataLength);
+        dmxDataCallback(universe, 0, packet->Data, dataLength);
     }
 
     PacketParseStatus ArtNet::onPacketReceived(uint32_t remoteIP, uint16_t remotePort, uint8_t *data, uint32_t size) {

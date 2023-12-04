@@ -130,11 +130,11 @@ namespace art_net {
             uint8_t net, subnet, mac[6], receiveSequence[ART_NET_OUTPUT_UNIVERSE_COUNT];
             uint32_t ip;
             void setSendPacketCallback(std::function<void(uint32_t, uint16_t, uint8_t*, uint32_t)> func);
-            void setDmxDataCallback(std::function<void(uint8_t, uint8_t*, uint16_t)> func);
+            void setDmxDataCallback(std::function<void(uint8_t, uint8_t, uint8_t*, uint16_t)> func);
             PacketParseStatus onPacketReceived(uint32_t remoteIP, uint16_t remotePort, uint8_t *data, uint32_t size);
         private:
             std::function<void(uint32_t, uint16_t, uint8_t*, uint32_t)> sendPacketFunc;
-            std::function<void(uint8_t, uint8_t*, uint16_t)> dmxDataCallback;
+            std::function<void(uint8_t, uint8_t, uint8_t*, uint16_t)> dmxDataCallback;
             void sendPollReply(uint32_t dstIP, uint16_t dstPort);
             void onDmxPacket(ArtNetDmxDataPacket *packet);
     };

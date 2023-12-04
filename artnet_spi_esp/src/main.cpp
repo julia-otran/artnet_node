@@ -19,7 +19,7 @@
 // Less the occurrence of this byte, better will perform this system. However the difference is not so big, as seen in the SPI notes.
 #define DATA_CTRL_STUFF_BYTE 0xCA
 #define DATA_CTRL_TRANSMISSION_BEGIN 0xF0
-#define DATA_CTRL_TRANSMISSION_END 0xF1
+#define DATA_CTRL_RECEIVE_NEXT_FRAME 0xF1
 #define DATA_CTRL_1BYTE_DATA 0xE0
 #define DATA_CTRL_2BYTE_DATA 0xE1
 #define DATA_CTRL_1BYTE_ZERO_DATA 0xD0
@@ -43,15 +43,15 @@
 // Our SPI should take a bit more than 10.27ms per 4 frame (consider time took to switch Chip Select and transactions begin / end)
 // However, this is less than a half of the time took for writing 1 frame into DMX512 cable.
 
-SPISettings ATTinySPISettings(24 * 100 * 1000, MSBFIRST, SPI_MODE0);
+SPISettings ATTinySPISettings(24 * 100 * 1000, MSBFIRST, SPI_MODE1);
 
 using namespace art_net;
 
 ArtNet MyArtNet;
 WiFiUDP UDP;
-uint8_t udpBuffer[1024 * 5];
+uint8_t udpBuffer[1024 * 3];
 
-uint8_t dataBuffer[4][2][512];
+uint8_t dataBuffer[4][2][513];
 uint16_t dataSize[4][2];
 
 uint8_t *sendDataPtr[4];
@@ -65,10 +65,15 @@ DataBuffer ReceiveDataBuffer(receiveDataBuffer, 2048);
 
 long lastDataReceived = 0;
 
-void onDataReceived(uint8_t universe, uint8_t *data, const uint16_t size) {
+void onDmxDataSend(uint8_t universe, uint8_t ctrlByte, uint8_t *data, const uint16_t size) {
   if (size <= 512) {
-    dataSize[universe][1] = size;
-    memcpy(bufferDataPtr[universe], data, size);
+    dataSize[universe][1] = size + 1;
+    bufferDataPtr[universe][0] = ctrlByte;
+    //memcpy(&bufferDataPtr[universe][1], data, size);
+
+    if (micros() - lastDataReceived > 200000) {
+      lastDataReceived = micros();
+    }
   }
 }
 
@@ -82,6 +87,8 @@ void setup() {
   pinMode(STATUS_LED_PIN, OUTPUT);
   pinMode(CS_DEMULT_PIN_BIT0, OUTPUT);
   pinMode(CS_DEMULT_PIN_BIT1, OUTPUT);
+
+  Serial.begin(250000, SERIAL_8N1);
 
   SPI.begin();
   SPI.setHwCs(0);
@@ -99,7 +106,7 @@ void setup() {
 
   MyArtNet.ip = WiFi.localIP().v4();
   WiFi.macAddress(MyArtNet.mac);
-  MyArtNet.setDmxDataCallback(onDataReceived);
+  MyArtNet.setDmxDataCallback(onDmxDataSend);
   MyArtNet.setSendPacketCallback(sendAtrNetPacket);
 
   sendDataPtr[0] = dataBuffer[0][0];
@@ -117,17 +124,19 @@ void setup() {
   digitalWrite(STATUS_LED_PIN, HIGH);
   delay(1000);
   digitalWrite(STATUS_LED_PIN, LOW);
+  delay(1000);
+  digitalWrite(STATUS_LED_PIN, HIGH);
+  delay(1000);
+  digitalWrite(STATUS_LED_PIN, LOW);
 }
 
 void loop() {
   if (UDP.parsePacket()) {
     size_t read = UDP.read(udpBuffer, sizeof(udpBuffer));
     MyArtNet.onPacketReceived(UDP.remoteIP().v4(), UDP.remotePort(), udpBuffer, read);
-
-    if (micros() - lastDataReceived > 200000) {
-      lastDataReceived = micros();
-    }
   }
+
+  uint8_t moreData = 0;
 
   if (micros() - lastDataReceived < 100000) {
     GPOS = GPOS | (1 << STATUS_LED_PIN);
@@ -135,97 +144,106 @@ void loop() {
     GPOC = GPOC | (1 << STATUS_LED_PIN);
   }
 
-  // for (uint8_t universe = 0; universe < 4; universe++) {
-  for (uint8_t universe = 0; universe < 1; universe++) {
-    // Swap buffers if transmission ended
-    if (lastSendIndex[universe] == LAST_SEND_INDEX_SEND_NEXT_FRAME) {
-      if (dataSize[universe][1] >= 192) {
+    // for (uint8_t universe = 0; universe < 4; universe++) {
+    for (uint8_t universe = 0; universe < 1; universe++) {
+      // Swap buffers if transmission ended
+      if (lastSendIndex[universe] == LAST_SEND_INDEX_SEND_NEXT_FRAME) {
         lastSendIndex[universe] = 0;
-        dataSize[universe][0] = dataSize[universe][1];
 
-        uint8_t *aux = sendDataPtr[universe];
-        sendDataPtr[universe] = bufferDataPtr[universe];
-        bufferDataPtr[universe] = aux;
-      }
-    }
+        if (dataSize[universe][1] >= 192) {
+          dataSize[universe][0] = dataSize[universe][1];
+          dataSize[universe][1] = 0;
 
-    // transmit buffer
-    // select chip
-
-    // Bit 0
-    if (universe & 1) {
-      GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT0);
-    } else {
-      GPOC = GPOC | (1 << CS_DEMULT_PIN_BIT0);
-    }
-
-    // Bit 1
-    if (universe & 2) {
-      GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT1);
-    } else {
-      GPOC = GPOC | (1 << CS_DEMULT_PIN_BIT1);
-    }
-
-    SPI.beginTransaction(ATTinySPISettings);
-
-    uint16_t sendIndex = lastSendIndex[universe];
-
-    if (sendIndex < dataSize[universe][0]) {
-      // Send start of transmission if sending first channel    
-      if (sendIndex == 0) {
-        ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_STUFF_BYTE));
-        ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_TRANSMISSION_BEGIN));
+          uint8_t *aux = sendDataPtr[universe];
+          sendDataPtr[universe] = bufferDataPtr[universe];
+          bufferDataPtr[universe] = aux;
+        }
       }
 
-      // If data is stuff bit
-      if (sendDataPtr[universe][sendIndex] == DATA_CTRL_STUFF_BYTE) {
-        ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_STUFF_BYTE));
+      // transmit buffer
+      // select chip
 
-        // Performance enhancement, if the next byte is the stuff too, we send that there are 2 data bytes
-        // This can reduce the maximum amount of transferred data from 1024 bytes to 768 bytes
-        if (sendIndex + 1 < dataSize[universe][0] && sendDataPtr[universe][sendIndex + 1] == DATA_CTRL_STUFF_BYTE) {
-          ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_2BYTE_DATA));
-          lastSendIndex[universe]++;
-        } else {
-          ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_1BYTE_DATA));
-        }
-      } else if (sendDataPtr[universe][sendIndex] == 0) {
-        // Zero means no data, not a zero data, so we should send the zero inside the CTRL escaping
-        ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_STUFF_BYTE));
-
-        // Performance enhancement, if the next byte is the stuff too, we send that there are 2 data bytes
-        // This can reduce the maximum amount of transferred data from 1024 bytes to 768 bytes
-        if (sendIndex + 1 < dataSize[universe][0] && sendDataPtr[universe][sendIndex + 1] == 0) {
-          ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_2BYTE_ZERO_DATA));
-          lastSendIndex[universe]++;
-        } else {
-          ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_1BYTE_ZERO_DATA));
-        }
+      // Bit 0
+      if (universe & 1) {
+        GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT0);
       } else {
-        ReceiveDataBuffer.enqueueIfValid(SPI.transfer(sendDataPtr[universe][sendIndex]));
+        GPOC = GPOC | (1 << CS_DEMULT_PIN_BIT0);
       }
 
-      lastSendIndex[universe]++;
-    } else {
-      ReceiveDataBuffer.enqueueIfValid(SPI.transfer(0));
-    }
-
-    SPI.endTransaction();
-
-    while (ReceiveDataBuffer.isEmpty() != 0) {
-      if (ReceiveDataBuffer.get() == DATA_CTRL_STUFF_BYTE && ReceiveDataBuffer.used() <= 1) {
-        break;
+      // Bit 1
+      if (universe & 2) {
+        GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT1);
+      } else {
+        GPOC = GPOC | (1 << CS_DEMULT_PIN_BIT1);
       }
 
-      uint8_t data = ReceiveDataBuffer.dequeue();
+      SPI.beginTransaction(ATTinySPISettings);
 
-      if (data == DATA_CTRL_STUFF_BYTE) {
-        uint8_t ctrlValue = ReceiveDataBuffer.dequeue();
+      uint16_t sendIndex = lastSendIndex[universe];
 
-        if (ctrlValue == DATA_CTRL_TRANSMISSION_END) {
-          lastSendIndex[universe] = LAST_SEND_INDEX_SEND_NEXT_FRAME;
+      if (sendIndex < dataSize[universe][0]) {
+        // Send start of transmission if sending first channel    
+        if (sendIndex == 0) {
+          ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_STUFF_BYTE));
+          ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_TRANSMISSION_BEGIN));
+        }
+
+        // If data is stuff bit
+        if (sendDataPtr[universe][sendIndex] == DATA_CTRL_STUFF_BYTE) {
+          ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_STUFF_BYTE));
+
+          // Performance enhancement, if the next byte is the stuff too, we send that there are 2 data bytes
+          // This can reduce the maximum amount of transferred data from 1024 bytes to 768 bytes
+          if (sendIndex + 1 < dataSize[universe][0] && sendDataPtr[universe][sendIndex + 1] == DATA_CTRL_STUFF_BYTE) {
+            ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_2BYTE_DATA));
+            lastSendIndex[universe]++;
+          } else {
+            ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_1BYTE_DATA));
+          }
+        } else if (sendDataPtr[universe][sendIndex] == 0) {
+          // Zero means no data, not a zero data, so we should send the zero inside the CTRL escaping
+          ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_STUFF_BYTE));
+
+          // Performance enhancement, if the next byte is the stuff too, we send that there are 2 data bytes
+          // This can reduce the maximum amount of transferred data from 1024 bytes to 768 bytes
+          if (sendIndex + 1 < dataSize[universe][0] && sendDataPtr[universe][sendIndex + 1] == 0) {
+            ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_2BYTE_ZERO_DATA));
+            lastSendIndex[universe]++;
+          } else {
+            ReceiveDataBuffer.enqueueIfValid(SPI.transfer(DATA_CTRL_1BYTE_ZERO_DATA));
+          }
+        } else {
+          ReceiveDataBuffer.enqueueIfValid(SPI.transfer(sendDataPtr[universe][sendIndex]));
+        }
+
+        lastSendIndex[universe]++;
+      } else {
+        ReceiveDataBuffer.enqueueIfValid(SPI.transfer(0));
+      }
+
+      while (ReceiveDataBuffer.isEmpty() == 0) {
+        if (ReceiveDataBuffer.get() == DATA_CTRL_STUFF_BYTE && ReceiveDataBuffer.used() <= 1) {
+          ReceiveDataBuffer.enqueueIfValid(SPI.transfer(0));
+          continue;
+        }
+
+        uint8_t data = ReceiveDataBuffer.dequeue();
+
+        Serial.print(data);
+        Serial.print('\n');
+
+        if (data == DATA_CTRL_STUFF_BYTE) {
+          uint8_t ctrlValue = ReceiveDataBuffer.dequeue();
+
+          Serial.print(ctrlValue);
+          Serial.print('\n');
+
+          if (ctrlValue == DATA_CTRL_RECEIVE_NEXT_FRAME) {
+            lastSendIndex[universe] = LAST_SEND_INDEX_SEND_NEXT_FRAME;
+          }
         }
       }
+
+      SPI.endTransaction();
     }
-  }
 }
