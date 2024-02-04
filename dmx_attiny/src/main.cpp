@@ -37,6 +37,7 @@ uint8_t spiReceivedPreviousData;
 uint8_t transmitSpiBufferArr[256];
 DataBuffer TransmitSpiBuffer(transmitSpiBufferArr, 256);
 unsigned long lastTransmitBufferEmpty;
+unsigned long lastReceivedSPIData;
 
 uint32_t tcaOverflows;
 
@@ -53,11 +54,23 @@ ISR(TCA0_OVF_vect) {
 }
 
 unsigned long tcaMillis() {
-  return (tcaOverflows * 6UL) + (TCA0_SINGLE_CNT / 10000UL);
+  return ((unsigned long)tcaOverflows * 6UL) + ((unsigned long)TCA0_SINGLE_CNT / 10000UL);
 }
 
 unsigned long tcaMicros() {
-  return (tcaOverflows * 6UL * 1000UL) + (TCA0_SINGLE_CNT / 10UL);
+  return ((unsigned long)tcaOverflows * 6UL * 1000UL) + ((unsigned long)TCA0_SINGLE_CNT / 10UL);
+}
+
+void tcaStart() {
+  TCA0_SINGLE_INTCTRL = 0x1;
+
+  // 6 ms every ovf
+  TCA0_SINGLE_PER = (uint16_t) ((CLK_PER / 1000UL) * 6UL);
+
+  TCA0_SINGLE_CTRLD = 0;
+  TCA0_SINGLE_CTRLC = 0;
+  TCA0_SINGLE_CTRLB = 0;
+  TCA0_SINGLE_CTRLA = 0x1;
 }
 
 void setup() {
@@ -100,18 +113,13 @@ void setup() {
 
   USART0.BAUD = (int16_t) baud_reg_val;
 
-  PORTA.DIRSET = MISO_bm;
-  SPI0.CTRLB = SPI_BUFEN_bm | SPI_BUFWR_bm | 1;
-  SPI0.CTRLA = SPI_ENABLE_bm; // Start
+  // PORTA.DIRCLR = 1 << 4;
+  // PORTA.DIRSET = MISO_bm;
+  // SPI0.CTRLB = SPI_BUFEN_bm | SPI_BUFWR_bm | 1;
+  // SPI0.CTRLA = SPI_ENABLE_bm; // Start
 
-  TCA0_SINGLE_INTCTRL = 0x1;
-  // 6 ms every ovf
-  TCA0_SINGLE_PER = (uint16_t) ((CLK_PER / 1000UL) * 6UL);
-
-  TCA0_SINGLE_CTRLD = 0;
-  TCA0_SINGLE_CTRLC = 0;
-  TCA0_SINGLE_CTRLB = 0;
-  TCA0_SINGLE_CTRLA = 0x1;
+  tcaStart();
+  lastReceivedSPIData = tcaMillis();
 }
 
 void loop() {
@@ -120,6 +128,8 @@ void loop() {
   }
 
   if(SPI0.INTFLAGS & SPI_RXCIF_bm) {
+    lastReceivedSPIData = tcaMillis();
+
     uint8_t data = SPI0.DATA;
 
     if (data > 0) {
@@ -156,7 +166,8 @@ void loop() {
 
     if (SERIAL_TX_BUFFER_SIZE - Serial.availableForWrite() <= 1 && dmxTransmitBreak == 1) {
       Serial.flush();
-      pinModeFast(DMX_OUTPUT_BREAK_PIN, OUTPUT);
+      // pinModeFast(DMX_OUTPUT_BREAK_PIN, OUTPUT);
+      PORTA.DIRSET = 1 << 5;
       dmxOutputBreakStartedAt = currentMicros;
       dmxTransmitBreak = 2;
     }
@@ -164,7 +175,8 @@ void loop() {
     unsigned long timeDelta = currentMicros - dmxOutputBreakStartedAt;
 
     if (dmxTransmitBreak == 2 && timeDelta >= 88UL) {
-      pinModeFast(DMX_OUTPUT_BREAK_PIN, INPUT);
+      // pinModeFast(DMX_OUTPUT_BREAK_PIN, INPUT);
+      PORTA.DIRCLR = 1 << 5;
       dmxTransmitBreak = 3;
       dmxOutputBreakStartedAt = currentMicros;
     }
@@ -198,5 +210,21 @@ void loop() {
         lastTransmitBufferEmpty = tcaMillis();
       }
     }
+  }
+
+  if (tcaMillis() - lastReceivedSPIData > 150UL) {
+    SPI0.CTRLA = 0;
+
+    while (tcaMillis() - lastReceivedSPIData < 300UL);
+
+    dmxTransmitPosition = SERIAL_TRANSMIT_POSITION_UNKNOWN;
+    TransmitDmxBuffer.clear();
+
+    PORTA.DIRCLR = 1 << 4;
+    PORTA.DIRSET = MISO_bm;
+    SPI0.CTRLB = SPI_BUFEN_bm | SPI_BUFWR_bm | 1;
+    SPI0.CTRLA = SPI_ENABLE_bm; // Start
+    
+    lastReceivedSPIData = tcaMillis();
   }
 }
