@@ -23,11 +23,11 @@ uint8_t DataBuffer::canEnqueue() {
     return usedCount < totalSize;
 }
 
-int DataBuffer::used() {
+uint16_t DataBuffer::used() {
     return usedCount;
 }
 
-int DataBuffer::available() {
+uint16_t DataBuffer::available() {
     return totalSize - usedCount;
 }
 

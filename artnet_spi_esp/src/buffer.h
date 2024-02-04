@@ -6,8 +6,8 @@ class DataBuffer {
         void clear();
         uint8_t isEmpty();
         uint8_t canEnqueue();
-        int used();
-        int available();
+        uint16_t used();
+        uint16_t available();
         void enqueue(uint8_t data);
         void enqueueIfValid(uint8_t data);
         uint8_t dequeue();

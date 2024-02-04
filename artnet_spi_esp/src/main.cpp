@@ -67,52 +67,54 @@ uint8_t currentSPITransferUniverse;
 uint32_t SPI_BIT_COUNT_MASK;
 
 void onDmxDataSend(uint8_t universe, uint8_t ctrlByte, uint8_t *data, const uint16_t size) {
-  if (size <= 512) {
-    txInputDataBuffers[universe]->clear();
-    txInputDataBuffers[universe]->enqueue(DATA_CTRL_STUFF_BYTE);
-    txInputDataBuffers[universe]->enqueue(DATA_CTRL_TRANSMISSION_BEGIN);
+  if ((size <= 512 || ctrlByte != 0) && universe < 4) {
+    DataBuffer *input = txInputDataBuffers[universe];
+
+    input->clear();
+    input->enqueue(DATA_CTRL_STUFF_BYTE);
+    input->enqueue(DATA_CTRL_TRANSMISSION_BEGIN);
 
     uint8_t nextVal = ctrlByte;
-    uint16_t currentPos = -1;
+    int16_t currentPos = -1;
 
     while (currentPos < size) {
       if (nextVal == 0) {
-        txInputDataBuffers[universe]->enqueue(DATA_CTRL_STUFF_BYTE);
+        input->enqueue(DATA_CTRL_STUFF_BYTE);
 
         if (currentPos + 1 < size && data[currentPos + 1] == 0) {  
-          txInputDataBuffers[universe]->enqueue(DATA_CTRL_2BYTE_ZERO_DATA);
+          input->enqueue(DATA_CTRL_2BYTE_ZERO_DATA);
           currentPos += 2;
         } else {
-          txInputDataBuffers[universe]->enqueue(DATA_CTRL_1BYTE_ZERO_DATA);
+          input->enqueue(DATA_CTRL_1BYTE_ZERO_DATA);
           currentPos += 1;
         }
       } else if (nextVal == DATA_CTRL_STUFF_BYTE) {
-        txInputDataBuffers[universe]->enqueue(DATA_CTRL_STUFF_BYTE);
+        input->enqueue(DATA_CTRL_STUFF_BYTE);
 
-        if (currentPos + 1 < size && data[currentPos + 1] == 0) {  
-          txInputDataBuffers[universe]->enqueue(DATA_CTRL_2BYTE_DATA);
+        if (currentPos + 1 < size && data[currentPos + 1] == DATA_CTRL_STUFF_BYTE) {  
+          input->enqueue(DATA_CTRL_2BYTE_DATA);
           currentPos += 2;
         } else {
-          txInputDataBuffers[universe]->enqueue(DATA_CTRL_1BYTE_DATA);
+          input->enqueue(DATA_CTRL_1BYTE_DATA);
           currentPos += 1;
         }
       } else {
-        txInputDataBuffers[universe]->enqueue(nextVal);
+        input->enqueue(nextVal);
         currentPos += 1;
       }
 
       nextVal = data[currentPos];
     }
 
-    while (currentPos < 191) {
-      txInputDataBuffers[universe]->enqueue(DATA_CTRL_STUFF_BYTE);
-      txInputDataBuffers[universe]->enqueue(DATA_CTRL_2BYTE_ZERO_DATA);
+    while (currentPos < 191 && ctrlByte == 0) {
+      input->enqueue(DATA_CTRL_STUFF_BYTE);
+      input->enqueue(DATA_CTRL_2BYTE_ZERO_DATA);
       currentPos += 2;
     }
 
-    if (currentPos < 192) {
-      txInputDataBuffers[universe]->enqueue(DATA_CTRL_STUFF_BYTE);
-      txInputDataBuffers[universe]->enqueue(DATA_CTRL_1BYTE_ZERO_DATA);
+    if (currentPos < 192 && ctrlByte == 0) {
+      input->enqueue(DATA_CTRL_STUFF_BYTE);
+      input->enqueue(DATA_CTRL_1BYTE_ZERO_DATA);
       currentPos += 1;
     }
 
@@ -210,17 +212,16 @@ void loop() {
   }
 
   // Swap buffers if needed
-  uint8_t universe = currentSPITransferUniverse;
-  DataBuffer *txOutputBuffer = txOutputDataBuffers[universe];
+  uint8_t readUniverse = currentSPITransferUniverse;
+  DataBuffer *txOutputBuffer = txOutputDataBuffers[readUniverse];
 
-  if (lastSendIndex[universe] == LAST_SEND_INDEX_SEND_NEXT_FRAME && txOutputBuffer->isEmpty()) {
-    DataBuffer *txInputBuffer = txInputDataBuffers[universe];
+  if (lastSendIndex[readUniverse] == LAST_SEND_INDEX_SEND_NEXT_FRAME && txOutputBuffer->isEmpty()) {
+    DataBuffer *txInputBuffer = txInputDataBuffers[readUniverse];
 
-    if (txInputBuffer->used() >= 192) {
-      Serial.print("Swapping buffers....\n");
-      lastSendIndex[universe] = 0;
-      txOutputDataBuffers[universe] = txInputBuffer;
-      txInputDataBuffers[universe] = txOutputBuffer;
+    if (txInputBuffer->used()) {
+      lastSendIndex[readUniverse] = 0;
+      txOutputDataBuffers[readUniverse] = txInputBuffer;
+      txInputDataBuffers[readUniverse] = txOutputBuffer;
       txOutputBuffer = txInputBuffer;
     }
   }
@@ -230,13 +231,21 @@ void loop() {
 
   uint8_t count = 0;
   uint8_t* dataInPtr = (uint8_t*)&SPI1W0;
-  DataBuffer *rxDataBuffer = receiveDataBuffer[universe];
+  DataBuffer *rxDataBuffer = receiveDataBuffer[readUniverse];
 
   while (count < 64) {
     rxDataBuffer->enqueueIfValid((*dataInPtr));
     dataInPtr++;
     count++;
   }
+
+  uint8_t writeUniverse = readUniverse + 1;
+
+  if (writeUniverse > 3) {
+    writeUniverse = 0;
+  }
+
+  currentSPITransferUniverse = writeUniverse;
 
   // Upload SPI data
 
@@ -259,7 +268,7 @@ void loop() {
   }
   */
 
-  if (universe == 0) {
+  if (writeUniverse == 0) {
     GPOC = GPOC | (1 << CS_DEMULT_PIN_BIT0);
   } else {
     GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT0);
@@ -290,18 +299,11 @@ void loop() {
       uint8_t cmd = rxDataBuffer->dequeue();
 
       if (cmd == DATA_CTRL_RECEIVE_NEXT_FRAME) {
-        Serial.print("Next frame request received;\n");
         if (micros() - lastDataReceived > 200000) {
           lastDataReceived = micros();
         }
-        lastSendIndex[universe] = LAST_SEND_INDEX_SEND_NEXT_FRAME;
+        lastSendIndex[readUniverse] = LAST_SEND_INDEX_SEND_NEXT_FRAME;
       }
     } 
-  }
-
-  currentSPITransferUniverse += 1;
-
-  if (currentSPITransferUniverse > 3) {
-    currentSPITransferUniverse = 0;
   }
 }
