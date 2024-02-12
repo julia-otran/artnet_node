@@ -11,6 +11,7 @@ class DataBuffer {
         void enqueue(uint8_t data);
         void enqueueIfValid(uint8_t data);
         uint8_t dequeue();
+        uint32_t dequeue32();
         uint8_t get();
     private:
         uint16_t dequeuePosition, enqueuePosition, usedCount, totalSize;

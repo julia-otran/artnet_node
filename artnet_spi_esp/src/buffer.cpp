@@ -69,6 +69,17 @@ uint8_t DataBuffer::dequeue() {
     return result;
 }
 
+uint32_t DataBuffer::dequeue32() {
+    uint32_t result = 0;
+
+    result |= dequeue();
+    result |= ((uint32_t)dequeue()) << 8;
+    result |= ((uint32_t)dequeue()) << 16;
+    result |= ((uint32_t)dequeue()) << 24;
+
+    return result;
+}
+
 uint8_t DataBuffer::get() {
     return buffer[dequeuePosition];
 }
