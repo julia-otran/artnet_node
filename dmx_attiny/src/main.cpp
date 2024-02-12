@@ -27,7 +27,7 @@ void setup() {
     sigrowVal = SIGROW.OSC20ERR5V;
   }
 
-  PORTB_DIRSET = 1;
+  PORTB_DIRCLR = 1;
 
   serialStart();
   spiStart();
@@ -46,8 +46,8 @@ void loop() {
   }
 
   if (USART0_STATUS & USART_TXCIE_bm) {
-    PORTB_OUTSET = 1;
-  } else {
-    PORTB_OUTCLR = 1;
+    PORTB_DIRSET = 1;
+  } else if (TransmitDmxBuffer.used() > 1) {
+    PORTB_DIRCLR = 1;
   }
 }

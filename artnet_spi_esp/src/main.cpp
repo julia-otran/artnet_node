@@ -191,6 +191,13 @@ void loop() {
       SPI1W0 = txOutputBuffer[currentTxIndex];
       SPI1CMD |= SPIBUSY;
 
+      if (currentTxIndex >= 5 && currentTxIndex < 20 && Serial1.availableForWrite() > 4) {
+        Serial1.write((uint8_t)0b01010101);
+        Serial1.write((uint8_t)0b01010101);
+        Serial1.write((uint8_t)0b01010101);
+        clockWriteCount += 3;
+      }  
+
       while(SPI1CMD & SPIBUSY) {}
     }
 
