@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <Wire.h>
 #include <ESP8266WiFi.h>
 #include <SPI.h>
 #include <esp8266_peri.h>
@@ -6,6 +7,10 @@
 #include <ArtNet.h>
 #include <WiFiUdp.h>
 #include <uart.h>
+#include <hd44780.h>
+#include <hd44780ioClass/hd44780_I2Cexp.h>
+
+hd44780_I2Cexp lcd(0x27);
 
 // Create this file and define the WIFI_SSID and WIFI_PASSWORD
 #include <wifi_network.h>
@@ -13,8 +18,8 @@
 #define STATUS_LED_PIN GPIO_ID_PIN(2)
 
 // Use something like a SN74AHC138 to demultiplex these bits into 4 CS pins
-#define CS_DEMULT_PIN_BIT0 GPIO_ID_PIN(4)
-#define CS_DEMULT_PIN_BIT1 GPIO_ID_PIN(5)
+#define CS_DEMULT_PIN_BIT0 GPIO_ID_PIN(0)
+#define CS_DEMULT_PIN_BIT1 GPIO_ID_PIN(15)
 
 // Note:
 // 1. ATtiny max SCK is 5Mhz, so setting to 4.8Mhz
@@ -55,6 +60,9 @@ uint16_t currentTxIndex;
 
 uint32_t SPI_BIT_COUNT_MASK;
 
+uint32_t frameCount;
+unsigned long lastFrameCheckInterval;
+
 uint16_t clockWriteCntTotal() {
   uint32_t bitsToSend = (dmxChannels + 1) * 11;
   uint32_t clockSentPerByte = 5;
@@ -84,11 +92,25 @@ void sendAtrNetPacket(uint32_t dstIP, uint16_t dstPort, uint8_t *data, uint32_t 
 void setup() {
   dmxChannels = 512;
 
-  GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT0);
-  GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT1);
-
   pinMode(CS_DEMULT_PIN_BIT0, OUTPUT);
   pinMode(CS_DEMULT_PIN_BIT1, OUTPUT);
+  GPOS = 1 << CS_DEMULT_PIN_BIT0;
+  GPOS = 1 << CS_DEMULT_PIN_BIT1;
+
+  pinMode(GPIO_ID_PIN(5), OUTPUT);
+  pinMode(GPIO_ID_PIN(4), OUTPUT);
+
+  Wire.begin();
+  Wire.setClock(99000);
+
+  lcd.begin(16, 2);
+  lcd.clear();
+  lcd.print("JSLC");
+  lcd.setCursor(0, 1);
+  lcd.print("ArtNet to DMX512");
+  lcd.display();
+
+  delay(2000);
 
   SPI.begin();
   SPI.setHwCs(0);
@@ -98,15 +120,34 @@ void setup() {
   const uint32_t mask = ~((SPIMMOSI << SPILMOSI) | (SPIMMISO << SPILMISO));
   SPI_BIT_COUNT_MASK = ((SPI1U1 & mask) | ((bits << SPILMOSI) | (bits << SPILMISO)));
 
-  pinMode(STATUS_LED_PIN, OUTPUT);
+  lcd.clear();
+  lcd.print("Connecting WiFi");
+  lcd.setCursor(0, 1);
+  lcd.print(".");
+  lcd.display();
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
+  uint8_t dotCount = 0;
+
   while (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(STATUS_LED_PIN, HIGH);
-    delay(100);
-    digitalWrite(STATUS_LED_PIN, LOW);
-    delay(100);
+    lcd.setCursor(0, 1);
+    for (uint8_t i = 0; i < 16; i++) {
+      if (i < dotCount) {
+        lcd.print(".");
+      } else {
+        lcd.print(" ");
+      }
+    }
+
+    lcd.display();
+    dotCount++;
+
+    if (dotCount >= 16) {
+      dotCount = 1;
+    }
+    
+    delay(250);
   }
 
   UDP.begin(0x1936);
@@ -126,47 +167,53 @@ void setup() {
   txOutputDataBuffers[2] = txDataBufferArr[2][1];
   txOutputDataBuffers[3] = txDataBufferArr[3][1];
 
-  delay(500);
-  digitalWrite(STATUS_LED_PIN, HIGH);
-  delay(500);
-  digitalWrite(STATUS_LED_PIN, LOW);
-  delay(500);
-  digitalWrite(STATUS_LED_PIN, HIGH);
-  delay(500);
-  digitalWrite(STATUS_LED_PIN, LOW);
-  delay(500);
-  digitalWrite(STATUS_LED_PIN, HIGH);
-  delay(500);
-  digitalWrite(STATUS_LED_PIN, LOW);
-  delay(500);
-
-  Serial.begin(250000, SERIAL_8N1);
   Serial1.begin(500000, SERIAL_8N1);
+
+  lcd.clear();
+  lcd.print("DMX FPS:");
+  lcd.display();
+
+  lastFrameCheckInterval = millis();
 }
 
 void loop() {
-  if (UDP.parsePacket()) {
+  if (currentTxIndex >= (dmxChannels / 2) && UDP.parsePacket()) {
     size_t read = UDP.read((uint8_t*)udpBuffer, sizeof(udpBuffer));
     MyArtNet.onPacketReceived(UDP.remoteIP().v4(), UDP.remotePort(), (uint8_t*)udpBuffer, read);
   }
 
-  if (currentTxIndex >= (dmxChannels + 1) && clockWriteCount >= clockWriteCntTotal() && UART_TX_FIFO_SIZE - Serial1.availableForWrite() <= 1) {
-    Serial.flush();
+  if (currentTxIndex >= (dmxChannels + 1) && clockWriteCount >= clockWriteCntTotal()) {
+    if (UART_TX_FIFO_SIZE - Serial1.availableForWrite() <= 1) {
+      Serial1.flush();
 
-    for (uint8_t universe = 0; universe < 4; universe++) {
-      if (txInputDataBufferReady[universe]) {
-        txInputDataBufferReady[universe] = 0;
+      for (uint8_t universe = 0; universe < 4; universe++) {
+        if (txInputDataBufferReady[universe]) {
+          txInputDataBufferReady[universe] = 0;
 
-        uint8_t *txInput = txInputDataBuffers[universe];
-        uint8_t *txOut = txOutputDataBuffers[universe];
+          uint8_t *txInput = txInputDataBuffers[universe];
+          uint8_t *txOut = txOutputDataBuffers[universe];
 
-        txInputDataBuffers[universe] = txOut;
-        txOutputDataBuffers[universe] = txInput;
+          txInputDataBuffers[universe] = txOut;
+          txOutputDataBuffers[universe] = txInput;
+        }
       }
-    }
 
-    currentTxIndex = 0;
-    clockWriteCount = 0;
+      currentTxIndex = 0;
+      clockWriteCount = 0;
+      frameCount++;
+    } else if (frameCount > 90) {
+      unsigned long now = millis();
+      unsigned long interval = now - lastFrameCheckInterval;
+
+      unsigned long fps = frameCount * 1000 * 100 / interval;
+
+      lcd.setCursor(9, 0);
+      lcd.print(fps / 100.0);
+      lcd.display();
+
+      lastFrameCheckInterval = now;
+      frameCount = 0;
+    }
   }
 
   // IO
@@ -181,11 +228,11 @@ void loop() {
       uint8_t *txOutputBuffer = txOutputDataBuffers[universe];
 
       if (universe == 0) {
-        GPOC = GPOC | (1 << CS_DEMULT_PIN_BIT0);
-        GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT1);
+        GPOC = 1 << CS_DEMULT_PIN_BIT0;
+        GPOS = 1 << CS_DEMULT_PIN_BIT1;
       } else {
-        GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT0);
-        GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT1);
+        GPOS = 1 << CS_DEMULT_PIN_BIT0;
+        GPOS = 1 << CS_DEMULT_PIN_BIT1;
       }
 
       SPI1W0 = txOutputBuffer[currentTxIndex];
