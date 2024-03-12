@@ -101,16 +101,18 @@ void setup() {
   pinMode(GPIO_ID_PIN(4), OUTPUT);
 
   Wire.begin();
-  Wire.setClock(99000);
+  Wire.setClock(100000);
 
   lcd.begin(16, 2);
+  lcd.setContrast(0x0F);
   lcd.clear();
   lcd.print("JSLC");
   lcd.setCursor(0, 1);
   lcd.print("ArtNet to DMX512");
   lcd.display();
 
-  delay(2000);
+  delay(1750);
+  optimistic_yield(2000);
 
   SPI.begin();
   SPI.setHwCs(0);
@@ -147,7 +149,7 @@ void setup() {
       dotCount = 1;
     }
     
-    delay(250);
+    optimistic_yield(250);
   }
 
   UDP.begin(0x1936);
@@ -169,11 +171,11 @@ void setup() {
 
   Serial1.begin(500000, SERIAL_8N1);
 
-  lcd.clear();
-  lcd.print("DMX FPS:");
-  lcd.display();
-
   lastFrameCheckInterval = millis();
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("DMX FPS: ");
 }
 
 void loop() {
@@ -227,9 +229,14 @@ void loop() {
     for (uint8_t universe = 0; universe < 4; universe++) {
       uint8_t *txOutputBuffer = txOutputDataBuffers[universe];
 
+      while(SPI1CMD & SPIBUSY) {}
+
       if (universe == 0) {
         GPOC = 1 << CS_DEMULT_PIN_BIT0;
         GPOS = 1 << CS_DEMULT_PIN_BIT1;
+      } else if (universe == 1) {
+        GPOS = 1 << CS_DEMULT_PIN_BIT0;
+        GPOC = 1 << CS_DEMULT_PIN_BIT1;
       } else {
         GPOS = 1 << CS_DEMULT_PIN_BIT0;
         GPOS = 1 << CS_DEMULT_PIN_BIT1;
@@ -238,21 +245,16 @@ void loop() {
       SPI1W0 = txOutputBuffer[currentTxIndex];
       SPI1CMD |= SPIBUSY;
 
-      if (currentTxIndex >= 5 && currentTxIndex < 20 && Serial1.availableForWrite() > 4) {
+      if (currentTxIndex >= 4 && (clockWriteCount + 3 < clockWriteCntTotal()) && Serial1.availableForWrite() > 5) {
         Serial1.write((uint8_t)0b01010101);
         Serial1.write((uint8_t)0b01010101);
         Serial1.write((uint8_t)0b01010101);
         clockWriteCount += 3;
       }  
-
-      while(SPI1CMD & SPIBUSY) {}
     }
 
     currentTxIndex++;
   }
-
-  GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT0);
-  GPOS = GPOS | (1 << CS_DEMULT_PIN_BIT1);
 
   while (Serial1.availableForWrite() > 4 && clockWriteCount < clockWriteCntTotal()) {
     Serial1.write((uint8_t)0b01010101);

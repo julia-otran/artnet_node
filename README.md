@@ -5,17 +5,15 @@
 ### Basic Components
 
 - (1x) ESP12-E
+- (1x) SN74AHC138
 - (4x) ATtiny1614
-- (8x) MAX485 or similar RS-232 <-> RS-485 converter
+- (4x) 6N137
+- (4x) MAX487 or similar RS-232 <-> RS-485 converter
 
 ### Multiple universes
 
-- 4 input universes
-- 4 output universes
+- 4 synchronized output universes
 
-### Basic Diagram
+### Electric Diagram
 
-Connect the ESP SPI interface to the ATtiny SPI.
-
-- ESP sends and receives dmx data via SPI
-- ATtiny "converts" SPI data into Serial data, and vice-versa.
+https://crcit.net/c/7fb5a744346b4a50a5064630ad6b27e6
