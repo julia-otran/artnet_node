@@ -7,6 +7,7 @@
 
 uint8_t transmitDmxBufferArr[768];
 DataBuffer TransmitDmxBuffer(transmitDmxBufferArr, sizeof(transmitDmxBufferArr));
+uint8_t isBreaking;
 
 void setup() {
   // Makes tiny run at 10Mhz (20Mhz OSC / 2)
@@ -27,10 +28,12 @@ void setup() {
     sigrowVal = SIGROW.OSC20ERR5V;
   }
 
-  PORTB_DIRCLR = 1;
+  PORTB_DIRSET = 1;
 
   serialStart();
   spiStart();
+  tcaPrepare();
+  tcaStart();
 }
 
 void loop() {
@@ -46,8 +49,23 @@ void loop() {
   }
 
   if (USART0_STATUS & USART_TXCIE_bm) {
-    PORTB_DIRSET = 1;
+    if (isBreaking == 0) {
+      PORTB_DIRCLR = 1;
+      isBreaking = 1;
+      tcaStart();
+    }
   } else if (TransmitDmxBuffer.used() > 1) {
-    PORTB_DIRCLR = 1;
+    isBreaking = 0;
+    PORTB_DIRSET = 1;
+  }
+
+  if (isBreaking) {
+    if (TCA0_SINGLE_CNT >= 458U) {
+      PORTB_DIRSET = 1;
+    }
+
+    if (TCA0_SINGLE_CNT > 40000U) {
+      TransmitDmxBuffer.clear();
+    }
   }
 }
