@@ -14,6 +14,6 @@ void spiStart() {
   PORTA.DIRCLR = 1 << 4;
   PORTA.DIRSET = MISO_bm;
   SPI0.CTRLB = SPI_BUFEN_bm | SPI_BUFWR_bm | 1;
+  SPI0.INTCTRL = 0;
   SPI0.CTRLA = SPI_ENABLE_bm; // Start
-  SPI0.INTCTRL = 0; // SPI_RXCIE_bm;
 }

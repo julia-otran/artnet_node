@@ -7,7 +7,7 @@
 
 uint8_t transmitDmxBufferArr[768];
 DataBuffer TransmitDmxBuffer(transmitDmxBufferArr, sizeof(transmitDmxBufferArr));
-uint8_t isBreaking;
+uint8_t clearSwitch;
 
 void setup() {
   // Makes tiny run at 10Mhz (20Mhz OSC / 2)
@@ -28,44 +28,39 @@ void setup() {
     sigrowVal = SIGROW.OSC20ERR5V;
   }
 
-  PORTB_DIRSET = 1;
+  PORTB_DIRCLR = 1;
+
+  clearSwitch = 0;
 
   serialStart();
   spiStart();
-  tcaPrepare();
-  tcaStart();
 }
 
 void loop() {
+  if (SPI0_INTFLAGS & SPI_DREIF_bm) {
+    SPI0_DATA = 0;
+  }
+
   if (SPI0_INTFLAGS & SPI_RXCIF_bm) {
     TransmitDmxBuffer.enqueue(SPI0_DATA);
   }
 
   if (USART0_STATUS & USART_DREIF_bm) {
     if (TransmitDmxBuffer.used()) {
-      USART0_STATUS = USART_TXCIE_bm;
       USART0_TXDATAL = TransmitDmxBuffer.dequeue();
     }
   }
 
-  if (USART0_STATUS & USART_TXCIE_bm) {
-    if (isBreaking == 0) {
-      PORTB_DIRCLR = 1;
-      isBreaking = 1;
-      tcaStart();
-    }
-  } else if (TransmitDmxBuffer.used() > 1) {
-    isBreaking = 0;
-    PORTB_DIRSET = 1;
-  }
-
-  if (isBreaking) {
-    if (TCA0_SINGLE_CNT >= 458U) {
-      PORTB_DIRSET = 1;
-    }
-
-    if (TCA0_SINGLE_CNT > 40000U) {
+  if (PORTB_IN & 1) {
+    if (clearSwitch == 0) {
+      PORTA_DIRCLR = 1 << 5;
       TransmitDmxBuffer.clear();
+      clearSwitch = 1;
+    }
+  } else {
+    if (clearSwitch == 1) {
+      clearSwitch = 0;
+      PORTA_DIRSET = 1 << 5;
     }
   }
 }

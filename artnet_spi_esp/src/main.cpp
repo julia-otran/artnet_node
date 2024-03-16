@@ -15,11 +15,12 @@ hd44780_I2Cexp lcd(0x27);
 // Create this file and define the WIFI_SSID and WIFI_PASSWORD
 #include <wifi_network.h>
 
-#define STATUS_LED_PIN GPIO_ID_PIN(2)
+#define DELTA(a,b) ((a > b) ? (a) - (b) : (b) - (a))
 
 // Use something like a SN74AHC138 to demultiplex these bits into 4 CS pins
 #define CS_DEMULT_PIN_BIT0 GPIO_ID_PIN(0)
 #define CS_DEMULT_PIN_BIT1 GPIO_ID_PIN(15)
+#define DMX_BREAK_PIN GPIO_ID_PIN(2)
 
 // Note:
 // 1. ATtiny max SCK is 5Mhz, so setting to 4.8Mhz
@@ -39,7 +40,7 @@ hd44780_I2Cexp lcd(0x27);
 // Our SPI should take a bit more than 10.27ms per 4 frame (consider time took to switch Chip Select and transactions begin / end)
 // However, this is less than a half of the time took for writing 1 frame into DMX512 cable.
 
-SPISettings ATTinySPISettings(20 * 100 * 1000, MSBFIRST, SPI_MODE1);
+SPISettings ATTinySPISettings(15 * 100 * 1000, MSBFIRST, SPI_MODE1);
 
 using namespace art_net;
 
@@ -62,6 +63,8 @@ uint32_t SPI_BIT_COUNT_MASK;
 
 uint32_t frameCount;
 unsigned long lastFrameCheckInterval;
+
+unsigned long breakStartAt;
 
 uint16_t clockWriteCntTotal() {
   uint32_t bitsToSend = (dmxChannels + 1) * 11;
@@ -94,8 +97,11 @@ void setup() {
 
   pinMode(CS_DEMULT_PIN_BIT0, OUTPUT);
   pinMode(CS_DEMULT_PIN_BIT1, OUTPUT);
+  pinMode(DMX_BREAK_PIN, OUTPUT);
+
   GPOS = 1 << CS_DEMULT_PIN_BIT0;
   GPOS = 1 << CS_DEMULT_PIN_BIT1;
+  GPOC = 1 << DMX_BREAK_PIN;
 
   pinMode(GPIO_ID_PIN(5), OUTPUT);
   pinMode(GPIO_ID_PIN(4), OUTPUT);
@@ -169,13 +175,15 @@ void setup() {
   txOutputDataBuffers[2] = txDataBufferArr[2][1];
   txOutputDataBuffers[3] = txDataBufferArr[3][1];
 
-  Serial1.begin(500000, SERIAL_8N1);
+  Serial.begin(500000, SERIAL_8N1);
 
   lastFrameCheckInterval = millis();
 
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("DMX FPS: ");
+
+  breakStartAt = 0;
 }
 
 void loop() {
@@ -185,8 +193,11 @@ void loop() {
   }
 
   if (currentTxIndex >= (dmxChannels + 1) && clockWriteCount >= clockWriteCntTotal()) {
-    if (UART_TX_FIFO_SIZE - Serial1.availableForWrite() <= 1) {
-      Serial1.flush();
+    if (UART_TX_FIFO_SIZE - Serial.availableForWrite() <= 1) {
+      Serial.flush();
+
+      GPOS = 1 << DMX_BREAK_PIN;
+      breakStartAt = micros();
 
       for (uint8_t universe = 0; universe < 4; universe++) {
         if (txInputDataBufferReady[universe]) {
@@ -245,10 +256,18 @@ void loop() {
       SPI1W0 = txOutputBuffer[currentTxIndex];
       SPI1CMD |= SPIBUSY;
 
-      if (currentTxIndex >= 4 && (clockWriteCount + 3 < clockWriteCntTotal()) && Serial1.availableForWrite() > 5) {
-        Serial1.write((uint8_t)0b01010101);
-        Serial1.write((uint8_t)0b01010101);
-        Serial1.write((uint8_t)0b01010101);
+      if (breakStartAt != 0) {
+        if (DELTA(breakStartAt, micros()) > 96) {
+          breakStartAt = 0;
+        } else if (DELTA(breakStartAt, micros()) > 88) {
+          GPOC = 1 << DMX_BREAK_PIN;
+        }
+      }
+
+      if (breakStartAt == 0 && (clockWriteCount + 3 < clockWriteCntTotal()) && Serial.availableForWrite() > 5) {
+        Serial.write((uint8_t)0b01010101);
+        Serial.write((uint8_t)0b01010101);
+        Serial.write((uint8_t)0b01010101);
         clockWriteCount += 3;
       }  
     }
@@ -256,8 +275,8 @@ void loop() {
     currentTxIndex++;
   }
 
-  while (Serial1.availableForWrite() > 4 && clockWriteCount < clockWriteCntTotal()) {
-    Serial1.write((uint8_t)0b01010101);
+  while (Serial.availableForWrite() > 4 && clockWriteCount < clockWriteCntTotal()) {
+    Serial.write((uint8_t)0b01010101);
     clockWriteCount++;
   }
 }
