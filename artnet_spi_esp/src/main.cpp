@@ -40,7 +40,7 @@ hd44780_I2Cexp lcd(0x27);
 // Our SPI should take a bit more than 10.27ms per 4 frame (consider time took to switch Chip Select and transactions begin / end)
 // However, this is less than a half of the time took for writing 1 frame into DMX512 cable.
 
-SPISettings ATTinySPISettings(15 * 100 * 1000, MSBFIRST, SPI_MODE1);
+SPISettings ATTinySPISettings(20 * 100 * 1000, MSBFIRST, SPI_MODE1);
 
 using namespace art_net;
 
@@ -65,12 +65,18 @@ uint32_t frameCount;
 unsigned long lastFrameCheckInterval;
 
 unsigned long breakStartAt;
+uint8_t breakStatus;
+
+uint8_t dotCount = 0;
+wl_status_t lastWifiStatus;
+
 
 uint16_t clockWriteCntTotal() {
   uint32_t bitsToSend = (dmxChannels + 1) * 11;
   uint32_t clockSentPerByte = 5;
+  uint32_t clockCount = (bitsToSend + (clockSentPerByte - 1)) / clockSentPerByte;
 
-  return (bitsToSend + (clockSentPerByte - 1)) / clockSentPerByte;
+  return clockCount;
 }
 
 void onDmxDataSend(uint8_t universe, uint8_t ctrlByte, uint8_t *data, const uint16_t size) {
@@ -118,7 +124,8 @@ void setup() {
   lcd.display();
 
   delay(1750);
-  optimistic_yield(2000);
+
+  lcd.clear();
 
   SPI.begin();
   SPI.setHwCs(0);
@@ -128,40 +135,9 @@ void setup() {
   const uint32_t mask = ~((SPIMMOSI << SPILMOSI) | (SPIMMISO << SPILMISO));
   SPI_BIT_COUNT_MASK = ((SPI1U1 & mask) | ((bits << SPILMOSI) | (bits << SPILMISO)));
 
-  lcd.clear();
-  lcd.print("Connecting WiFi");
-  lcd.setCursor(0, 1);
-  lcd.print(".");
-  lcd.display();
-
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  lastWifiStatus = WiFi.status();
 
-  uint8_t dotCount = 0;
-
-  while (WiFi.status() != WL_CONNECTED) {
-    lcd.setCursor(0, 1);
-    for (uint8_t i = 0; i < 16; i++) {
-      if (i < dotCount) {
-        lcd.print(".");
-      } else {
-        lcd.print(" ");
-      }
-    }
-
-    lcd.display();
-    dotCount++;
-
-    if (dotCount >= 16) {
-      dotCount = 1;
-    }
-    
-    optimistic_yield(250);
-  }
-
-  UDP.begin(0x1936);
-
-  MyArtNet.ip = WiFi.localIP().v4();
-  WiFi.macAddress(MyArtNet.mac);
   MyArtNet.setDmxDataCallback(onDmxDataSend);
   MyArtNet.setSendPacketCallback(sendAtrNetPacket);
 
@@ -179,42 +155,90 @@ void setup() {
 
   lastFrameCheckInterval = millis();
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("DMX FPS: ");
-
   breakStartAt = 0;
 }
 
 void loop() {
-  if (currentTxIndex >= (dmxChannels / 2) && UDP.parsePacket()) {
-    size_t read = UDP.read((uint8_t*)udpBuffer, sizeof(udpBuffer));
-    MyArtNet.onPacketReceived(UDP.remoteIP().v4(), UDP.remotePort(), (uint8_t*)udpBuffer, read);
+  wl_status_t currentStatus = WiFi.status();
+
+  if (currentStatus != WL_CONNECTED) {
+    lastWifiStatus = currentStatus;
+
+    UDP.stop();
+
+    lcd.print("Connecting WiFi");
+
+    lcd.setCursor(0, 1);
+
+    for (uint8_t i = 0; i < 16; i++) {
+      if (i < dotCount) {
+        lcd.print(".");
+      } else {
+        lcd.print(" ");
+      }
+    }
+
+    lcd.display();
+    dotCount++;
+
+    if (dotCount >= 16) {
+      dotCount = 1;
+    }
+
+    delay(250);
+
+    return;
+  } else if (currentStatus == WL_CONNECTED && lastWifiStatus != WL_CONNECTED) {
+    MyArtNet.ip = WiFi.localIP().v4();
+    WiFi.macAddress(MyArtNet.mac);
+
+    UDP.begin(0x1936);
+
+    lastWifiStatus = currentStatus;
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("DMX FPS: ");
+
+    return;
   }
 
-  if (currentTxIndex >= (dmxChannels + 1) && clockWriteCount >= clockWriteCntTotal()) {
-    if (UART_TX_FIFO_SIZE - Serial.availableForWrite() <= 1) {
-      Serial.flush();
+  if (UDP.parsePacket()) {
+    size_t read = UDP.read((uint8_t*)udpBuffer, sizeof(udpBuffer));
+    MyArtNet.onPacketReceived(UDP.remoteIP().v4(), UDP.remotePort(), (uint8_t*)udpBuffer, read);
+    yield();
+  }
 
-      GPOS = 1 << DMX_BREAK_PIN;
-      breakStartAt = micros();
+  if (
+    clockWriteCount >= clockWriteCntTotal() &&
+    (UART_TX_FIFO_SIZE - Serial.availableForWrite() <= 8)
+  ) {
+    while (UART_TX_FIFO_SIZE - Serial.availableForWrite() > 1) {}
+    
+    breakStartAt = micros();
+    breakStatus = 1;
 
-      for (uint8_t universe = 0; universe < 4; universe++) {
-        if (txInputDataBufferReady[universe]) {
-          txInputDataBufferReady[universe] = 0;
+    GPOS = 1 << DMX_BREAK_PIN;
 
-          uint8_t *txInput = txInputDataBuffers[universe];
-          uint8_t *txOut = txOutputDataBuffers[universe];
+    for (uint8_t universe = 0; universe < 4; universe++) {
+      if (txInputDataBufferReady[universe]) {
+        txInputDataBufferReady[universe] = 0;
 
-          txInputDataBuffers[universe] = txOut;
-          txOutputDataBuffers[universe] = txInput;
-        }
+        uint8_t *txInput = txInputDataBuffers[universe];
+        uint8_t *txOut = txOutputDataBuffers[universe];
+
+        txInputDataBuffers[universe] = txOut;
+        txOutputDataBuffers[universe] = txInput;
       }
+    }
 
-      currentTxIndex = 0;
-      clockWriteCount = 0;
-      frameCount++;
-    } else if (frameCount > 90) {
+    currentTxIndex = 0;
+    clockWriteCount = 0;
+    frameCount++;
+  }
+
+  if (Serial.availableForWrite() <= 32 && clockWriteCount >= clockWriteCntTotal()) {
+    if (frameCount > 90) {
       unsigned long now = millis();
       unsigned long interval = now - lastFrameCheckInterval;
 
@@ -223,16 +247,35 @@ void loop() {
       lcd.setCursor(9, 0);
       lcd.print(fps / 100.0);
       lcd.display();
+      yield();
 
       lastFrameCheckInterval = now;
       frameCount = 0;
     }
   }
 
+  while (
+    Serial.availableForWrite() > 1 && 
+    currentTxIndex >= (dmxChannels + 1) && 
+    clockWriteCount < clockWriteCntTotal()  
+  ) {
+    Serial.write((uint8_t)0b01010101);
+    clockWriteCount++;
+    yield();
+  }
+
+  if (currentTxIndex >= (dmxChannels + 1)) {
+    return;
+  } else if (currentTxIndex >= 72) {
+    yield();
+  }
+
   // IO
   SPI1U1 = SPI_BIT_COUNT_MASK;
 
-  for (uint8_t countBytes = 0; countBytes < 32; countBytes++) {
+  #define TRANSMIT_BYTES ((currentTxIndex >= 72) ? 16 : 72)
+
+  for (uint8_t countBytes = 0; countBytes < TRANSMIT_BYTES; countBytes++) {
     if (currentTxIndex >= (dmxChannels + 1)) {
       break;
     }
@@ -240,7 +283,7 @@ void loop() {
     for (uint8_t universe = 0; universe < 4; universe++) {
       uint8_t *txOutputBuffer = txOutputDataBuffers[universe];
 
-      while(SPI1CMD & SPIBUSY) {}
+      while(SPI1CMD & SPIBUSY) { }
 
       if (universe == 0) {
         GPOC = 1 << CS_DEMULT_PIN_BIT0;
@@ -256,15 +299,22 @@ void loop() {
       SPI1W0 = txOutputBuffer[currentTxIndex];
       SPI1CMD |= SPIBUSY;
 
-      if (breakStartAt != 0) {
-        if (DELTA(breakStartAt, micros()) > 96) {
+      if (breakStatus != 0) {
+        unsigned long currentMicros = micros();
+
+        if (breakStatus == 2) {
           breakStartAt = 0;
-        } else if (DELTA(breakStartAt, micros()) > 88) {
-          GPOC = 1 << DMX_BREAK_PIN;
+          breakStatus = 0;
+        } else if (breakStatus == 1) {
+          if (DELTA(breakStartAt, currentMicros) > 118) {
+            GPOC = 1 << DMX_BREAK_PIN;
+            breakStatus = 2;
+            breakStartAt = currentMicros;
+          }
         }
       }
 
-      if (breakStartAt == 0 && (clockWriteCount + 3 < clockWriteCntTotal()) && Serial.availableForWrite() > 5) {
+      if (breakStartAt == 0 && (clockWriteCount + 3 < clockWriteCntTotal()) && Serial.availableForWrite() > 4) {
         Serial.write((uint8_t)0b01010101);
         Serial.write((uint8_t)0b01010101);
         Serial.write((uint8_t)0b01010101);
@@ -273,10 +323,5 @@ void loop() {
     }
 
     currentTxIndex++;
-  }
-
-  while (Serial.availableForWrite() > 4 && clockWriteCount < clockWriteCntTotal()) {
-    Serial.write((uint8_t)0b01010101);
-    clockWriteCount++;
   }
 }

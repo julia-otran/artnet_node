@@ -15,8 +15,8 @@ void setup() {
   // Be sure that:
   // 1. VDD is at least 3V. Lower voltages can cause problems
   // 2. Fuse is set to 20Mhz. (Factory default)
-  CPU_CCP = 0xD8;
-  CLKCTRL_MCLKCTRLB = 1;
+  // CPU_CCP = 0xD8;
+  // CLKCTRL_MCLKCTRLB = 1;
 
   uint8_t bodLevel = BOD.CTRLB & 0b00000111;
 
@@ -45,17 +45,21 @@ void loop() {
     TransmitDmxBuffer.enqueue(SPI0_DATA);
   }
 
-  if (USART0_STATUS & USART_DREIF_bm) {
+  if (clearSwitch == 0 && USART0_STATUS & USART_DREIF_bm) {
     if (TransmitDmxBuffer.used()) {
+      USART0_STATUS = USART_TXCIF_bm;
       USART0_TXDATAL = TransmitDmxBuffer.dequeue();
     }
   }
 
   if (PORTB_IN & 1) {
     if (clearSwitch == 0) {
-      PORTA_DIRCLR = 1 << 5;
       TransmitDmxBuffer.clear();
       clearSwitch = 1;
+    }
+
+    if (USART0_STATUS & USART_TXCIF_bm) {
+      PORTA_DIRCLR = 1 << 5;
     }
   } else {
     if (clearSwitch == 1) {
