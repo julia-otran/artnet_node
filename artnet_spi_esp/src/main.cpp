@@ -115,7 +115,7 @@ void setup() {
   Wire.begin();
   Wire.setClock(100000);
 
-  lcd.begin(16, 2);
+  lcd.begin(20, 4);
   lcd.setContrast(0x0F);
   lcd.clear();
   lcd.print("JSLC");
@@ -166,6 +166,7 @@ void loop() {
 
     UDP.stop();
 
+    lcd.setCursor(0, 0);
     lcd.print("Connecting WiFi");
 
     lcd.setCursor(0, 1);
