@@ -201,6 +201,16 @@ void loop() {
     lcd.setCursor(0, 0);
     lcd.print("DMX FPS: ");
 
+    lcd.setCursor(0, 3);
+    lcd.print("IP: ");
+    lcd.print((MyArtNet.ip) & 0xFF);
+    lcd.print(".");
+    lcd.print((MyArtNet.ip >> 8) & 0xFF);
+    lcd.print(".");
+    lcd.print((MyArtNet.ip >> 16) & 0xFF);
+    lcd.print(".");
+    lcd.print((MyArtNet.ip >> 24) & 0xFF);
+
     return;
   }
 
