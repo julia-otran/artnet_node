@@ -1,16 +1,12 @@
 #include <Arduino.h>
-#include <Wire.h>
 #include <ESP8266WiFi.h>
 #include <SPI.h>
 #include <esp8266_peri.h>
-#include <buffer.h>
-#include <ArtNet.h>
 #include <WiFiUdp.h>
 #include <uart.h>
-#include <hd44780.h>
-#include <hd44780ioClass/hd44780_I2Cexp.h>
-
-hd44780_I2Cexp lcd(0x27);
+#include "osd.h"
+#include "buffer.h"
+#include "ArtNet.h"
 
 // Create this file and define the WIFI_SSID and WIFI_PASSWORD
 #include <wifi_network.h>
@@ -67,9 +63,7 @@ unsigned long lastFrameCheckInterval;
 unsigned long breakStartAt;
 uint8_t breakStatus;
 
-uint8_t dotCount = 0;
 wl_status_t lastWifiStatus;
-
 
 uint16_t clockWriteCntTotal() {
   uint32_t bitsToSend = (dmxChannels + 1) * 11;
@@ -112,20 +106,8 @@ void setup() {
   pinMode(GPIO_ID_PIN(5), OUTPUT);
   pinMode(GPIO_ID_PIN(4), OUTPUT);
 
-  Wire.begin();
-  Wire.setClock(100000);
-
-  lcd.begin(20, 4);
-  lcd.setContrast(0x0F);
-  lcd.clear();
-  lcd.print("JSLC");
-  lcd.setCursor(0, 1);
-  lcd.print("ArtNet to DMX512");
-  lcd.display();
-
+  osd_init();
   delay(1750);
-
-  lcd.clear();
 
   SPI.begin();
   SPI.setHwCs(0);
@@ -158,37 +140,12 @@ void setup() {
   breakStartAt = 0;
 }
 
-void loop() {
+void wifi_routine() {
   wl_status_t currentStatus = WiFi.status();
 
   if (currentStatus != WL_CONNECTED) {
     lastWifiStatus = currentStatus;
-
     UDP.stop();
-
-    lcd.setCursor(0, 0);
-    lcd.print("Connecting WiFi");
-
-    lcd.setCursor(0, 1);
-
-    for (uint8_t i = 0; i < 16; i++) {
-      if (i < dotCount) {
-        lcd.print(".");
-      } else {
-        lcd.print(" ");
-      }
-    }
-
-    lcd.display();
-    dotCount++;
-
-    if (dotCount >= 16) {
-      dotCount = 1;
-    }
-
-    delay(250);
-
-    return;
   } else if (currentStatus == WL_CONNECTED && lastWifiStatus != WL_CONNECTED) {
     MyArtNet.ip = WiFi.localIP().v4();
     WiFi.macAddress(MyArtNet.mac);
@@ -196,23 +153,11 @@ void loop() {
     UDP.begin(0x1936);
 
     lastWifiStatus = currentStatus;
-
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("DMX FPS: ");
-
-    lcd.setCursor(0, 3);
-    lcd.print("IP: ");
-    lcd.print((MyArtNet.ip) & 0xFF);
-    lcd.print(".");
-    lcd.print((MyArtNet.ip >> 8) & 0xFF);
-    lcd.print(".");
-    lcd.print((MyArtNet.ip >> 16) & 0xFF);
-    lcd.print(".");
-    lcd.print((MyArtNet.ip >> 24) & 0xFF);
-
-    return;
   }
+}
+
+void loop() {
+  wifi_routine();
 
   if (UDP.parsePacket()) {
     size_t read = UDP.read((uint8_t*)udpBuffer, sizeof(udpBuffer));
@@ -225,7 +170,17 @@ void loop() {
     (UART_TX_FIFO_SIZE - Serial.availableForWrite() <= 8)
   ) {
     while (UART_TX_FIFO_SIZE - Serial.availableForWrite() > 1) {}
-    
+
+    uint8_t settings_routine_result = osd_settings_routine();
+
+    if (settings_routine_result > 0) {
+      if (settings_routine_result == 2) {
+        // Reload settings
+      }
+
+      return;
+    }
+
     breakStartAt = micros();
     breakStatus = 1;
 
@@ -255,9 +210,12 @@ void loop() {
 
       unsigned long fps = frameCount * 1000 * 100 / interval;
 
-      lcd.setCursor(9, 0);
-      lcd.print(fps / 100.0);
-      lcd.display();
+      if (lastWifiStatus != WL_CONNECTED) {
+        osd_print_wifi_stat(lastWifiStatus);
+      } else {
+        osd_print_fps(fps / 100.0);
+      }
+
       yield();
 
       lastFrameCheckInterval = now;
