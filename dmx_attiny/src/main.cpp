@@ -59,12 +59,12 @@ void loop() {
     }
 
     if (USART0_STATUS & USART_TXCIF_bm) {
-      PORTA_DIRCLR = 1 << 5;
+      PORTA_DIRCLR = 1 << 6;
     }
   } else {
     if (clearSwitch == 1) {
       clearSwitch = 0;
-      PORTA_DIRSET = 1 << 5;
+      PORTA_DIRSET = 1 << 6;
     }
   }
 }
