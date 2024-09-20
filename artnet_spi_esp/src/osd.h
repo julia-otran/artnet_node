@@ -18,6 +18,7 @@ typedef struct {
 Settings* osd_get_settings();
 uint16_t osd_get_channel_quantity();
 uint8_t osd_settings_routine();
+void osd_check_keyboard();
 void osd_print_fps(float fps);
 void osd_print_wifi_stat(wl_status_t status);
 void osd_print_default();

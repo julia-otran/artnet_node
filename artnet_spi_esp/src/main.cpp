@@ -157,6 +157,8 @@ void wifi_routine() {
 }
 
 void loop() {
+  uint8_t settings_routine_result;
+
   wifi_routine();
 
   if (UDP.parsePacket()) {
@@ -171,14 +173,12 @@ void loop() {
   ) {
     while (UART_TX_FIFO_SIZE - Serial.availableForWrite() > 1) {}
 
-    uint8_t settings_routine_result = osd_settings_routine();
+    settings_routine_result = osd_settings_routine();
 
     if (settings_routine_result > 0) {
       if (settings_routine_result == 2) {
         // Reload settings
       }
-
-      return;
     }
 
     breakStartAt = micros();
@@ -204,15 +204,19 @@ void loop() {
   }
 
   if (Serial.availableForWrite() <= 32 && clockWriteCount >= clockWriteCntTotal()) {
+    osd_check_keyboard();
+
+    if (lastWifiStatus != WL_CONNECTED) {
+      osd_print_wifi_stat(lastWifiStatus);
+    }
+
     if (frameCount > 90) {
       unsigned long now = millis();
       unsigned long interval = now - lastFrameCheckInterval;
 
       unsigned long fps = frameCount * 1000 * 100 / interval;
 
-      if (lastWifiStatus != WL_CONNECTED) {
-        osd_print_wifi_stat(lastWifiStatus);
-      } else {
+      if (lastWifiStatus == WL_CONNECTED) {
         osd_print_fps(fps / 100.0);
       }
 

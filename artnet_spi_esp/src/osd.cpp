@@ -5,8 +5,11 @@
 #include <hd44780ioClass/hd44780_I2Cexp.h>
 #include <EEPROM.h>
 #include "osd.h"
+#include <PCF8575.h>
 
 hd44780_I2Cexp lcd(0x27);
+
+PCF8575 keyboard(0x20);
 
 static Settings current_settings;
 
@@ -18,12 +21,26 @@ uint8_t next_setting = 0;
 uint8_t prev_setting = 0;
 uint8_t dotCount;
 uint32_t wifiStatPrintMillis;
+uint32_t lastKeyboardPress;
 
 #define OSD_STATE_FPS 1
 #define OSD_STATE_SETTINGS 2
 #define OSD_STATE_WIFI ((uint8_t)0xF0)
 
-byte osd_state;
+byte ARROW_CHAR[] = {
+  B00100,
+  B01110,
+  B10101,
+  B00100,
+  B00100,
+  B10101,
+  B01110,
+  B00100
+};
+
+
+uint16_t osd_state;
+bool keyboardInit;
 
 Settings* osd_get_settings() {
     return &current_settings;
@@ -57,12 +74,25 @@ void osd_init() {
   Wire.begin();
   Wire.setClock(100000);
 
+  for (byte pin = 0; pin < 16; pin++) {
+    keyboard.pinMode(pin, INPUT_PULLUP);
+  }
+
+  keyboardInit = keyboard.begin();
+
   lcd.begin(20, 4);
+  lcd.createChar(0, ARROW_CHAR);
   lcd.setContrast(0x0F);
   lcd.clear();
   lcd.print("JSLC");
   lcd.setCursor(0, 1);
   lcd.print("ArtNet to DMX512");
+
+  if (!keyboardInit) {
+    lcd.setCursor(0, 3);
+    lcd.print("Keyboard Err!");
+  }
+
   lcd.display();
 }
 
@@ -103,39 +133,47 @@ void osd_print_wifi_connecting() {
  */
 
 void osd_print_wifi_stat(wl_status_t status) {
-    if (millis() - wifiStatPrintMillis > 250) {
-        if ((osd_state >> 4) != (status + 1)) {
-          lcd.clear();
-          osd_state = (status + 1) << 4;
-        }
+  if (settings_mode_on > 0) {
+    return;
+  }
 
-        if (status == WL_WRONG_PASSWORD) {
-            lcd.setCursor(0, 0);
-            lcd.print("WiFi FAILED!");
-            lcd.setCursor(0, 1);
-            lcd.print("Wrong Password");
-            lcd.setCursor(0, 3);
-            lcd.print("> Settings");
-
-            lcd.display();
-        } else if (status == WL_CONNECT_FAILED) {
-            lcd.setCursor(0, 0);
-            lcd.print("WiFi FAILED!");
-            lcd.setCursor(0, 1);
-            lcd.print("Connection Failed");
-            lcd.setCursor(0, 3);
-            lcd.print("> Settings");
-
-            lcd.display();
-        } else {
-            osd_print_wifi_connecting();
-        }
-
-        wifiStatPrintMillis = millis();   
+  if (millis() - wifiStatPrintMillis > 250) {
+    if ((osd_state >> 8) != (status + 1)) {
+      lcd.clear();
+      osd_state = (status + 1) << 8;
     }
+
+    if (status == WL_WRONG_PASSWORD) {
+        lcd.setCursor(0, 0);
+        lcd.print("WiFi FAILED!");
+        lcd.setCursor(0, 1);
+        lcd.print("Wrong Password");
+        lcd.setCursor(0, 3);
+        lcd.print("> Settings");
+
+        lcd.display();
+    } else if (status == WL_CONNECT_FAILED) {
+        lcd.setCursor(0, 0);
+        lcd.print("WiFi FAILED!");
+        lcd.setCursor(0, 1);
+        lcd.print("Connection Failed");
+        lcd.setCursor(0, 3);
+        lcd.print("> Settings");
+
+        lcd.display();
+    } else {
+        osd_print_wifi_connecting();
+    }
+
+    wifiStatPrintMillis = millis();   
+  }
 }
 
 void osd_print_default() {
+  if (settings_mode_on > 0) {
+    return;
+  }
+
   if (osd_state != OSD_STATE_FPS) {
     lcd.clear();
     osd_state = OSD_STATE_FPS;
@@ -162,6 +200,10 @@ void osd_print_default() {
 }
 
 void osd_print_fps(float fps) {
+  if (settings_mode_on > 0) {
+    return;
+  }
+
   osd_print_default();
 
   lcd.setCursor(9, 0);
@@ -169,38 +211,69 @@ void osd_print_fps(float fps) {
   lcd.display();
 }
 
-uint32_t last_key_press;
+uint16_t key_press_map;
+
+uint8_t is_key_set(uint8_t key) {
+  bool last_state = (key_press_map >> key) & 1;
+
+  if (keyboard.digitalRead(key) == 0) {
+    if (last_state == 1) {
+      key_press_map = key_press_map & ~((uint16_t)(1 << key));
+      return 1;
+    }
+  } else {
+    key_press_map |= 1 << key;
+  }
+
+  return 0;
+}
 
 uint8_t key_left_set() {
-  return 0;
+  return is_key_set(0);
 }
 
 uint8_t key_right_set() {
-  return 0;
+  return is_key_set(1);
 }
 
 uint8_t key_up_set() {
-  return 0;
+  return is_key_set(2);
 }
 
 uint8_t key_down_set() {
-  return 0;
+  return is_key_set(3);
+}
+
+unsigned long last_keyboard_check;
+
+void osd_check_keyboard() {
+  if (!keyboardInit) {
+    return;
+  }  
+
+  if (millis() - last_keyboard_check < 50) {
+    return;
+  }
+
+  last_keyboard_check = millis();
+
+  if (settings_mode_on == 0 && key_right_set()) {
+    settings_mode_on = 1;
+    selected_setting = 0;
+    current_position = 1;
+    artnet_port_setting = 0;
+  }
 }
 
 uint8_t osd_settings_routine() {
-  if (key_right_set()) {
-    if (settings_mode_on == 0) { 
-      settings_mode_on = 1;
-      selected_setting = 0;
-      current_position = 1;
-      artnet_port_setting = 0;
-    }
+  if (!keyboardInit) {
+    return 0;
+  }
 
-    if (settings_mode_on == 2) {
+  if (settings_mode_on == 2 && key_right_set()) {
       settings_mode_on = 1;
       current_position = 1;
       selected_setting = next_setting;
-    }
   }
 
   if (settings_mode_on == 2 && key_left_set()) {
@@ -270,7 +343,7 @@ uint8_t osd_settings_routine() {
       }
 
       lcd.setCursor(0, 3);
-      lcd.print("< Run Mode | ↕ Switch OP");
+      lcd.print("< Save | "); lcd.write(0); lcd.print(" Sw OP");
     }
 
     if (selected_setting == 1 && artnet_port_setting == 0) {
@@ -306,7 +379,7 @@ uint8_t osd_settings_routine() {
       }
 
       lcd.setCursor(0, 3);
-      lcd.print("< Settings | ↕ Switch OP");
+      lcd.print("< Sett | "); lcd.write(0); lcd.print(" Sw OP");
     }
     
     if (selected_setting == 1 && artnet_port_setting > 0) {
@@ -345,7 +418,7 @@ uint8_t osd_settings_routine() {
       lcd.print("+/-");
 
       lcd.setCursor(0, 3);
-      lcd.print("< Ports | ↕ Switch OP");
+      lcd.print("< Ports | "); lcd.write(0); lcd.print(" Sw OP");
     }
 
     if (selected_setting == 2) {
@@ -403,7 +476,7 @@ uint8_t osd_settings_routine() {
       }
 
       lcd.setCursor(0, 3);
-      lcd.print("< Settings | ↕ Switch OP");
+      lcd.print("< Sett| "); lcd.write(0); lcd.print(" Sw OP");
     }
 
     if (selected_setting == 4) {
@@ -421,7 +494,7 @@ uint8_t osd_settings_routine() {
       }
 
       lcd.setCursor(0, 3);
-      lcd.print("< Settings | +/- Switch OP");
+      lcd.print("< Sett | +/- Sw OP");
     }
 
     if (selected_setting == 5 && (current_settings.wifi_mode & 1) == 0) {
@@ -452,7 +525,7 @@ uint8_t osd_settings_routine() {
       }
 
       lcd.setCursor(0, 3);
-      lcd.print("< WiFi | ↕ Switch OP");
+      lcd.print("< WiFi | "); lcd.write(0); lcd.print(" Sw OP");
     }
 
     if (selected_setting == 6 && (current_settings.wifi_mode & 1) == 0) {
@@ -472,7 +545,7 @@ uint8_t osd_settings_routine() {
       }
 
       lcd.setCursor(0, 3);
-      lcd.print("< SSID | ↕ Switch OP");
+      lcd.print("< SSID | "); lcd.write(0); lcd.print(" Sw OP");
     }
 
     if (
@@ -487,7 +560,8 @@ uint8_t osd_settings_routine() {
       lcd.print("Type WiFi SSID:");
 
       lcd.setCursor(0, 2);
-      lcd.print("↕ Char Pos | O Del");
+      lcd.write(0);
+      lcd.print(" Char Pos | O Del");
 
       lcd.setCursor(0, 3);
       lcd.print("< Confirm | +/- Char");
@@ -498,7 +572,8 @@ uint8_t osd_settings_routine() {
       lcd.print("Type WiFi Password:");
 
       lcd.setCursor(0, 2);
-      lcd.print("↕ Char Pos | O Del");
+      lcd.write(0);
+      lcd.print(" Char Pos | O Del");
 
       lcd.setCursor(0, 3);
       lcd.print("< Confirm | +/- Char");
@@ -537,7 +612,7 @@ uint8_t osd_settings_routine() {
         }
 
         lcd.setCursor(0, 3);
-        lcd.print("< IP | ↕ Switch OP");
+        lcd.print("< IP | "); lcd.write(0); lcd.print(" Sw OP");
       }
     }
 
@@ -585,7 +660,7 @@ uint8_t osd_settings_routine() {
       lcd.print("+/- Change Number");
 
       lcd.setCursor(0, 3);
-      lcd.print("< IP | ↕ Ch Block");
+      lcd.print("< IP | "); lcd.write(0); lcd.print(" Ch Block");
 
       if (current_position > 4) {
         current_position = 4;
