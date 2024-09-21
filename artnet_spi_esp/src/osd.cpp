@@ -7,6 +7,8 @@
 #include "osd.h"
 #include <PCF8575.h>
 
+char KEYBOARD_SYMBOLS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890-=+{}[]()<>*&%$#@!\"'\\/;:.,?|Çç ";
+
 hd44780_I2Cexp lcd(0x27);
 
 PCF8575 keyboard(0x20);
@@ -21,7 +23,8 @@ uint8_t next_setting = 0;
 uint8_t prev_setting = 0;
 uint8_t dotCount;
 uint32_t wifiStatPrintMillis;
-uint32_t lastKeyboardPress;
+bool lastEncoderClock;
+byte currentSymbolIndex;
 
 #define OSD_STATE_FPS 1
 #define OSD_STATE_SETTINGS 2
@@ -74,9 +77,13 @@ void osd_init() {
   Wire.begin();
   Wire.setClock(100000);
 
-  for (byte pin = 0; pin < 16; pin++) {
+  for (byte pin = 0; pin < 13; pin++) {
     keyboard.pinMode(pin, INPUT_PULLUP);
   }
+
+  keyboard.pinMode(13, OUTPUT, LOW);
+  keyboard.pinMode(14, OUTPUT, LOW);
+  keyboard.pinMode(15, OUTPUT, LOW);
 
   keyboardInit = keyboard.begin();
 
@@ -94,6 +101,57 @@ void osd_init() {
   }
 
   lcd.display();
+}
+
+String large_string_scroll;
+unsigned int position;
+unsigned long large_string_scroll_last_increment;
+
+void osd_scroll_routine() {
+  unsigned int str_length = large_string_scroll.length();
+
+  if (str_length == 0) {
+    position = 0;
+    return;
+  }
+
+  if (millis() - large_string_scroll_last_increment <= 400) {
+    return;
+  }
+
+  large_string_scroll_last_increment = millis();
+
+  if (str_length <= 20) {
+    lcd.setCursor(0, 1);
+    lcd.print(large_string_scroll);
+    return;
+  }
+
+  for (uint8_t i = 0; i < 20; i++) {
+    lcd.setCursor(i, 1);
+
+    if (i + position < str_length) { 
+      lcd.print(large_string_scroll[i + position]);
+    } else if (i + position == str_length) {
+      lcd.print(" ");
+    } else {
+      lcd.print(large_string_scroll[(i + position) - str_length - 1]);
+    }
+  }
+
+  position++;
+
+  if (position > str_length + 21) {
+    position = 0;
+  }
+}
+
+void osd_scroll_large_string(String s) {
+  large_string_scroll = s;
+}
+
+void osd_scroll_large_string_stop() {
+  large_string_scroll = "";
 }
 
 void osd_print_wifi_connecting() {
@@ -137,6 +195,8 @@ void osd_print_wifi_stat(wl_status_t status) {
     return;
   }
 
+  keyboard.digitalWrite(13, LOW);
+
   if (millis() - wifiStatPrintMillis > 250) {
     if ((osd_state >> 8) != (status + 1)) {
       lcd.clear();
@@ -175,6 +235,8 @@ void osd_print_default() {
   }
 
   if (osd_state != OSD_STATE_FPS) {
+    keyboard.digitalWrite(13, HIGH);
+
     lcd.clear();
     osd_state = OSD_STATE_FPS;
     
@@ -244,18 +306,29 @@ uint8_t key_down_set() {
   return is_key_set(3);
 }
 
-unsigned long last_keyboard_check;
+int8_t encoder_value() {
+  bool encoderClock = keyboard.digitalRead(4);
+  bool encoderData = keyboard.digitalRead(5);
+
+  int8_t result = 0;
+
+  if (lastEncoderClock == 1 && encoderClock == 0 && encoderData == 1) {
+    result = 1;
+  }
+
+  if (lastEncoderClock == 1 && encoderClock == 0 && encoderData == 0) {
+    result = -1;
+  }
+
+  lastEncoderClock = encoderClock;
+
+  return result;
+}
 
 void osd_check_keyboard() {
   if (!keyboardInit) {
     return;
   }  
-
-  if (millis() - last_keyboard_check < 50) {
-    return;
-  }
-
-  last_keyboard_check = millis();
 
   if (settings_mode_on == 0 && key_right_set()) {
     settings_mode_on = 1;
@@ -265,27 +338,115 @@ void osd_check_keyboard() {
   }
 }
 
+void osd_process_change_setting() {
+  osd_scroll_routine();
+
+  if (selected_setting == 1) {
+    if (artnet_port_setting == 1) {
+      if (current_position == 1) {
+        current_settings.address_mapping[0].net += encoder_value();
+
+        if (current_settings.address_mapping[0].net > 127) {
+          current_settings.address_mapping[0].net = 0;
+        }
+      }
+      if (current_position == 2) {
+        uint8_t sub = current_settings.address_mapping[0].subuni >> 4;
+        uint8_t uni = current_settings.address_mapping[0].subuni & 0xF;
+
+        sub = sub + encoder_value();
+
+        if (sub > 0xF) {
+          sub = 0;
+        }
+
+        current_settings.address_mapping[0].subuni = (sub << 4) | (uni & 0xF);
+      }
+      if (current_position == 3) {
+        uint8_t sub = current_settings.address_mapping[0].subuni >> 4;
+        uint8_t uni = current_settings.address_mapping[0].subuni & 0xF;
+
+        uni = uni + encoder_value();
+
+        if (uni > 0xF) {
+          uni = 0;
+        }
+
+        current_settings.address_mapping[0].subuni = (sub << 4) | (uni & 0xF);
+      }
+    }
+  }
+
+  if (selected_setting == 2) {
+    current_settings.output_channels += encoder_value();
+
+    if (current_settings.output_channels > 160) {
+      current_settings.output_channels = 0;
+    }
+  }
+
+  if (selected_setting == 4) {
+    bool wifiMode = current_settings.wifi_mode & 1;
+
+    if (encoder_value()) {
+      wifiMode = !wifiMode;
+    }
+
+    current_settings.wifi_mode = (current_settings.wifi_mode & 2) | wifiMode;
+  }
+
+  if (selected_setting == 6) {
+    int n = WiFi.scanComplete();
+
+    if (n < 0) {
+      lcd.setCursor(0, 1);
+      lcd.print("Searching...");
+    } else if (n == 0) {
+      lcd.setCursor(0, 1);
+      lcd.print("None found!");
+    } else if (current_position == 1) {
+      lcd.setCursor(0, 1);
+      lcd.printf("%03d", n);
+      lcd.print(" SSIDs found ");
+      lcd.write(0);
+      lcd.print(" ");
+      lcd.setCursor(0, 2);
+      lcd.print("... NEXT ...");
+    }
+  }
+}
+
 uint8_t osd_settings_routine() {
   if (!keyboardInit) {
     return 0;
   }
 
   if (settings_mode_on == 2 && key_right_set()) {
+      if (selected_setting == 1 && next_setting == 1) {
+        artnet_port_setting = current_position;
+      }
+
       settings_mode_on = 1;
       current_position = 1;
       selected_setting = next_setting;
   }
 
   if (settings_mode_on == 2 && key_left_set()) {
-      settings_mode_on = 1;
-      current_position = 1;
+    osd_scroll_large_string_stop();
 
-      if (prev_setting != 255) {
-        selected_setting = prev_setting;
+    if (prev_setting != 255) {
+      if (selected_setting == 1 && artnet_port_setting > 0) {
+        artnet_port_setting = 0;
       } else {
-        settings_mode_on = 0;
-        return 2;
+        selected_setting = prev_setting;
       }
+    } else {
+      settings_mode_on = 0;
+      return 2;
+    }
+
+    settings_mode_on = 1;
+    current_position = 1;
   }  
 
   if (settings_mode_on == 2 && key_up_set() && current_position > 1) {
@@ -298,395 +459,419 @@ uint8_t osd_settings_routine() {
       current_position++;
   }
 
-  if (settings_mode_on == 1) {
-    osd_state = OSD_STATE_SETTINGS;
-    settings_mode_on = 2;
-
-    lcd.clear();
-    
-    
-    if (selected_setting == 0) {
-      prev_setting = 255;
-
-      lcd.setCursor(0, 0);
-      lcd.print("Settings menu:");
-
-      lcd.setCursor(0, 2);
-
-      if (current_position <= 3) {    
-        lcd.print("... MORE ...");
-      } else {
-        lcd.print("--- END ---");
-        current_position = 4;
-      }
-
-      lcd.setCursor(0, 1);
-
-      if (current_position == 1) {
-        lcd.print("> ArtNet Addressing");
-        next_setting = 1;
-      }
-
-      if (current_position == 2) {
-        lcd.print("> Output Channels");
-        next_setting = 2;
-      }
-
-      if (current_position == 3) {
-        lcd.print("> WiFi");
-        next_setting = 3;
-      }
-
-      if (current_position == 3) {
-        lcd.print("> IP");
-        next_setting = 9;
-      }
-
-      lcd.setCursor(0, 3);
-      lcd.print("< Save | "); lcd.write(0); lcd.print(" Sw OP");
-    }
-
-    if (selected_setting == 1 && artnet_port_setting == 0) {
-      prev_setting = 0;
-      lcd.setCursor(0, 0);
-      lcd.print("ArtNet Adressing:");
-
-      lcd.setCursor(0, 2);
-
-      if (current_position <= 3) {    
-        lcd.print("... MORE ...");
-      } else {
-        lcd.print("--- END ---");
-        current_position = 4;
-      }
-
-      lcd.setCursor(0, 1);
-
-      if (current_position == 1) {
-        lcd.print("> Port 1 SRC");
-      }
-
-      if (current_position == 2) {
-        lcd.print("> Port 2 SRC");
-      }
-
-      if (current_position == 3) {
-        lcd.print("> Port 3 SRC");
-      }
-
-      if (current_position == 4) {
-        lcd.print("> Port 4 SRC");
-      }
-
-      lcd.setCursor(0, 3);
-      lcd.print("< Sett | "); lcd.write(0); lcd.print(" Sw OP");
-    }
-    
-    if (selected_setting == 1 && artnet_port_setting > 0) {
-      lcd.setCursor(0, 0);
-      lcd.print("Port ");
-      lcd.print(artnet_port_setting);
-      lcd.print(" ArtNet Addr:");
-
-      lcd.setCursor(0, 2);
-
-      if (current_position <= 2) {    
-        lcd.print("... MORE ...");
-      } else {
-        current_position = 3;
-        lcd.print("--- END ---");
-      }
-
-      lcd.setCursor(0, 1);
-
-      if (current_position == 1) {
-        lcd.print("Net:    ");
-        lcd.print(current_settings.address_mapping[artnet_port_setting - 1].net);
-      }
-
-      if (current_position == 2) {
-        lcd.print("Subnet: ");
-        lcd.print(current_settings.address_mapping[artnet_port_setting - 1].subuni >> 4);
-      }
-
-      if (current_position == 3) {
-        lcd.print("Univer: ");
-        lcd.print(current_settings.address_mapping[artnet_port_setting - 1].subuni & 0xF);
-      }
-
-      lcd.setCursor(18, 1);
-      lcd.print("+/-");
-
-      lcd.setCursor(0, 3);
-      lcd.print("< Ports | "); lcd.write(0); lcd.print(" Sw OP");
-    }
-
-    if (selected_setting == 2) {
-      prev_setting = 0;
-      next_setting = 2;
-
-      lcd.setCursor(0, 0);
-      lcd.print("Output Channels:");
-
-      lcd.setCursor(0, 1);
-      lcd.print("Qty: ");
-      lcd.print(osd_get_channel_quantity());
-
-      lcd.setCursor(18, 1);
-      lcd.print("+/-");
-
-      lcd.setCursor(0, 2);
-      lcd.print("FPS: ");
-      lcd.print(get_fps_estimate());
-
-      lcd.setCursor(0, 3);
-      lcd.print("< Settings");
-    }
-
-    if (selected_setting == 3) {
-      prev_setting = 0;
-
-      lcd.setCursor(0, 0);
-      lcd.print("WiFi:");
-
-      lcd.setCursor(0, 2);
-
-      if (current_position <= 2) {    
-        lcd.print("... MORE ...");
-      } else {
-        lcd.print("--- END ---");
-        current_position = 3;
-      }
-
-      lcd.setCursor(0, 1);
-
-      if (current_position == 1) {
-        lcd.print("> Mode (AP/Client)");
-        next_setting = 4;
-      }
-
-      if (current_position == 2) {
-        lcd.print("> SSID");
-        next_setting = 5;
-      }
-
-      if (current_position == 3) {
-        lcd.print("> Password");
-        next_setting = 8;
-      }
-
-      lcd.setCursor(0, 3);
-      lcd.print("< Sett| "); lcd.write(0); lcd.print(" Sw OP");
-    }
-
-    if (selected_setting == 4) {
-      prev_setting = 3;
-
-      lcd.setCursor(0, 0);
-      lcd.print("WiFi Mode:");
-
-      lcd.setCursor(0, 1);
-
-      if (current_settings.wifi_mode & 1) {
-        lcd.print("> [AP] |  Client ");
-      } else {
-        lcd.print(">  AP  | [Client]");
-      }
-
-      lcd.setCursor(0, 3);
-      lcd.print("< Sett | +/- Sw OP");
-    }
-
-    if (selected_setting == 5 && (current_settings.wifi_mode & 1) == 0) {
-      prev_setting = 3;
-
-      lcd.setCursor(0, 0);
-      lcd.print("WiFi SSID:");
-
-      lcd.setCursor(0, 2);
-
-      if (current_position <= 1) {    
-        lcd.print("... MORE ...");
-      } else {
-        current_position = 2;
-        lcd.print("--- END ---");
-      }
-
-      lcd.setCursor(0, 1);
-
-      if (current_position == 1) {
-        lcd.print("> Search for SSIDs");
-        next_setting = 6;
-      }
-
-      if (current_position == 2) {
-        lcd.print("> Enter Manually");
-        next_setting = 7;
-      }
-
-      lcd.setCursor(0, 3);
-      lcd.print("< WiFi | "); lcd.write(0); lcd.print(" Sw OP");
-    }
-
-    if (selected_setting == 6 && (current_settings.wifi_mode & 1) == 0) {
-      prev_setting = 5;
-      next_setting = 6;
-
-      lcd.setCursor(0, 0);
-      lcd.print("Select WiFi SSID:");
-
-      lcd.setCursor(0, 2);
-
-      if (current_position <= 1) {    
-        lcd.print("... NEXT ...");
-      } else {
-        current_position = 2;
-        lcd.print("--- END ---");
-      }
-
-      lcd.setCursor(0, 3);
-      lcd.print("< SSID | "); lcd.write(0); lcd.print(" Sw OP");
-    }
-
-    if (
-      (selected_setting == 5 && (current_settings.wifi_mode & 1)) ||
-      (selected_setting == 6 && (current_settings.wifi_mode & 1)) ||
-      (selected_setting == 7)
-     ) {
-      prev_setting = 3;
-      next_setting = 7;
-
-      lcd.setCursor(0, 0);
-      lcd.print("Type WiFi SSID:");
-
-      lcd.setCursor(0, 2);
-      lcd.write(0);
-      lcd.print(" Char Pos | O Del");
-
-      lcd.setCursor(0, 3);
-      lcd.print("< Confirm | +/- Char");
-    }
-
-    if (selected_setting == 8) {
-      lcd.setCursor(0, 0);
-      lcd.print("Type WiFi Password:");
-
-      lcd.setCursor(0, 2);
-      lcd.write(0);
-      lcd.print(" Char Pos | O Del");
-
-      lcd.setCursor(0, 3);
-      lcd.print("< Confirm | +/- Char");
-    }
-
-    if (selected_setting == 9) {
-      prev_setting = 0;
-      lcd.setCursor(0, 0);
-      lcd.print("IP:");
-
-      lcd.setCursor(0, 1);
-
-      if (current_position == 1) {
-        lcd.print("> Mode");
-        next_setting = 10;
-      }
-
-      if ((current_settings.wifi_mode & 2) == 0) {
-        lcd.setCursor(0, 2);
-        lcd.print("--- END ---");
-
-        lcd.setCursor(0, 3);
-        lcd.print("< IP");
-      } else {
-        lcd.setCursor(0, 2);
-        if (current_position <= 1) {    
-          lcd.print("... MORE ...");
-        } else {
-          current_position = 2;
-          lcd.print("--- END ---");
-        }
-
-        if (current_position == 2) {
-          lcd.print("> Set Addr");
-          next_setting = 11;
-        }
-
-        lcd.setCursor(0, 3);
-        lcd.print("< IP | "); lcd.write(0); lcd.print(" Sw OP");
-      }
-    }
-
-    if (selected_setting == 10) {
-      prev_setting = 9;
-      lcd.setCursor(0, 0);
-      lcd.print("IP Mode:");
-
-      lcd.setCursor(0, 1);
-
-      if ((current_settings.wifi_mode & 1) == 0) {
-        if ((current_settings.wifi_mode & 2) == 0) {
-          lcd.print("[DHCP Cli] |  Fixed ");
-        } else {
-          lcd.print(" DHCP Cli  | [Fixed]");
-        }
-      } else {
-        if ((current_settings.wifi_mode & 2) == 0) {
-          lcd.print("[DHCP Svr] |  Fixed ");
-        } else {
-          lcd.print(" DHCP Svr  | [Fixed]");
-        }
-      }
-
-      lcd.setCursor(0, 3);
-      lcd.print("< IP | +/- Change");
-    }
-
-    if (selected_setting == 11 && (current_settings.wifi_mode & 2) == 0) {
-      prev_setting = 9;
-      lcd.setCursor(0, 0);
-      lcd.print("Set IP Addr:");
-      
-      lcd.setCursor(0, 1);
-      lcd.print(" ");
-      lcd.print(current_settings.static_ip[0]);
-      lcd.print(".");
-      lcd.print(current_settings.static_ip[1]);
-      lcd.print(".");
-      lcd.print(current_settings.static_ip[2]);
-      lcd.print(".");
-      lcd.print(current_settings.static_ip[3]);
-
-      lcd.setCursor(0, 2);
-      lcd.print("+/- Change Number");
-
-      lcd.setCursor(0, 3);
-      lcd.print("< IP | "); lcd.write(0); lcd.print(" Ch Block");
-
-      if (current_position > 4) {
-        current_position = 4;
-      }
-
-      if (current_position == 1) {
-        lcd.setCursor(4, 1);
-      }
-
-      if (current_position == 2) {
-        lcd.setCursor(8, 1);
-      }
-
-      if (current_position == 3) {
-        lcd.setCursor(12, 1);
-      }
-
-      if (current_position == 4) {
-        lcd.setCursor(16, 1);
-      }
-
-      lcd.cursor();
-    }
-
-    lcd.display();
+  if (settings_mode_on == 2) {
+    osd_process_change_setting();
   }
+
+  if (settings_mode_on != 1) {
+    return settings_mode_on > 0;
+  }
+
+  osd_state = OSD_STATE_SETTINGS;
+  keyboard.digitalWrite(13, LOW);
+  settings_mode_on = 2;
+
+  lcd.clear();
+  
+  if (selected_setting == 0) {
+    prev_setting = 255;
+
+    lcd.setCursor(0, 0);
+    lcd.print("Settings menu:");
+
+    lcd.setCursor(0, 2);
+
+    if (current_position <= 3) {    
+      lcd.print("... MORE ...");
+    } else {
+      lcd.print("--- END ---");
+      current_position = 4;
+    }
+
+    lcd.setCursor(0, 1);
+
+    if (current_position == 1) {
+      lcd.print("> ArtNet Addressing");
+      next_setting = 1;
+    }
+
+    if (current_position == 2) {
+      lcd.print("> Output Channels");
+      next_setting = 2;
+    }
+
+    if (current_position == 3) {
+      lcd.print("> WiFi");
+      next_setting = 3;
+    }
+
+    if (current_position == 4) {
+      lcd.print("> IP");
+      next_setting = 9;
+    }
+
+    lcd.setCursor(0, 3);
+    lcd.print("< Save | "); lcd.write(0); lcd.print(" Sw OP");
+  }
+
+  if (selected_setting == 1 && artnet_port_setting == 0) {
+    prev_setting = 0;
+    lcd.setCursor(0, 0);
+    lcd.print("ArtNet Adressing:");
+
+    lcd.setCursor(0, 2);
+
+    if (current_position <= 3) {    
+      lcd.print("... MORE ...");
+    } else {
+      lcd.print("--- END ---");
+      current_position = 4;
+    }
+
+    lcd.setCursor(0, 1);
+
+    if (current_position == 1) {
+      lcd.print("> Port 1 SRC");
+    }
+
+    if (current_position == 2) {
+      lcd.print("> Port 2 SRC");
+    }
+
+    if (current_position == 3) {
+      lcd.print("> Port 3 SRC");
+    }
+
+    if (current_position == 4) {
+      lcd.print("> Port 4 SRC");
+    }
+
+    lcd.setCursor(0, 3);
+    lcd.print("< Sett | "); lcd.write(0); lcd.print(" Sw OP");
+  }
+  
+  if (selected_setting == 1 && artnet_port_setting > 0) {
+    lcd.setCursor(0, 0);
+    lcd.print("Port ");
+    lcd.print(artnet_port_setting);
+    lcd.print(" ArtNet Addr:");
+
+    lcd.setCursor(0, 2);
+
+    if (current_position <= 2) {    
+      lcd.print("... MORE ...");
+    } else {
+      current_position = 3;
+      lcd.print("--- END ---");
+    }
+
+    lcd.setCursor(0, 1);
+
+    if (current_position == 1) {
+      lcd.print("Net:    ");
+      lcd.print(current_settings.address_mapping[artnet_port_setting - 1].net);
+    }
+
+    if (current_position == 2) {
+      lcd.print("Subnet: ");
+      lcd.print(current_settings.address_mapping[artnet_port_setting - 1].subuni >> 4);
+    }
+
+    if (current_position == 3) {
+      lcd.print("Univer: ");
+      lcd.print(current_settings.address_mapping[artnet_port_setting - 1].subuni & 0xF);
+    }
+
+    lcd.setCursor(17, 1);
+    lcd.print("+/-");
+
+    lcd.setCursor(0, 3);
+    lcd.print("< Ports | "); lcd.write(0); lcd.print(" Sw OP");
+  }
+
+  if (selected_setting == 2) {
+    prev_setting = 0;
+    next_setting = 2;
+
+    lcd.setCursor(0, 0);
+    lcd.print("Output Channels:");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Qty: ");
+    lcd.print(osd_get_channel_quantity());
+
+    lcd.setCursor(17, 1);
+    lcd.print("+/-");
+
+    lcd.setCursor(0, 2);
+    lcd.print("FPS: ");
+    lcd.print(get_fps_estimate());
+
+    lcd.setCursor(0, 3);
+    lcd.print("< Settings");
+  }
+
+  if (selected_setting == 3) {
+    prev_setting = 0;
+
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi:");
+
+    lcd.setCursor(0, 2);
+
+    if (current_position <= 2) {    
+      lcd.print("... MORE ...");
+    } else {
+      lcd.print("--- END ---");
+      current_position = 3;
+    }
+
+    lcd.setCursor(0, 1);
+
+    if (current_position == 1) {
+      lcd.print("> Mode (AP/Client)");
+      next_setting = 4;
+    }
+
+    if (current_position == 2) {
+      lcd.print("> SSID");
+      next_setting = 5;
+    }
+
+    if (current_position == 3) {
+      lcd.print("> Password");
+      next_setting = 8;
+    }
+
+    lcd.setCursor(0, 3);
+    lcd.print("< Sett| "); lcd.write(0); lcd.print(" Sw OP");
+  }
+
+  if (selected_setting == 4) {
+    prev_setting = 3;
+
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi Mode:");
+
+    lcd.setCursor(0, 1);
+
+    if (current_settings.wifi_mode & 1) {
+      lcd.print("> [AP] |  Client ");
+    } else {
+      lcd.print(">  AP  | [Client]");
+    }
+
+    lcd.setCursor(0, 3);
+    lcd.print("< Sett | +/- Sw OP");
+  }
+
+  if (selected_setting == 5 && (current_settings.wifi_mode & 1) == 0) {
+    prev_setting = 3;
+
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi SSID:");
+
+    lcd.setCursor(0, 2);
+
+    if (current_position <= 1) {    
+      lcd.print("... MORE ...");
+    } else {
+      current_position = 2;
+      lcd.print("--- END ---");
+    }
+
+    lcd.setCursor(0, 1);
+
+    if (current_position == 1) {
+      lcd.print("> Search for SSIDs");
+      next_setting = 6;
+    }
+
+    if (current_position == 2) {
+      lcd.print("> Enter Manually");
+      next_setting = 7;
+    }
+
+    lcd.setCursor(0, 3);
+    lcd.print("< WiFi | "); lcd.write(0); lcd.print(" Sw OP");
+  }
+
+  if (selected_setting == 6 && (current_settings.wifi_mode & 1) == 0) {
+    if (prev_setting != 5) {
+      if (WiFi.scanComplete() > 0) {
+        WiFi.scanDelete();
+      }
+
+      WiFi.scanNetworks(true);
+    }
+
+    prev_setting = 5;
+    next_setting = 6;
+
+    lcd.setCursor(0, 0);
+    lcd.print("Select WiFi SSID:");
+
+    lcd.setCursor(0, 2);
+
+    int8_t countNetworks = WiFi.scanComplete();
+
+    if (countNetworks > 0 && current_position <= countNetworks + 1) {    
+      lcd.print("... NEXT ...");
+
+      if (current_position > 1) {
+        lcd.setCursor(0, 1);
+        osd_scroll_large_string(WiFi.SSID(current_position - 2));
+      }
+    } else {
+      if (countNetworks > 0) {
+        current_position = countNetworks + 2;
+      }
+
+      lcd.print("--- END ---");
+    }
+
+    lcd.setCursor(0, 3);
+    lcd.print("< SSID | "); lcd.write(0); lcd.print(" Sw OP");
+  }
+
+  if (
+    (selected_setting == 5 && (current_settings.wifi_mode & 1)) ||
+    (selected_setting == 6 && (current_settings.wifi_mode & 1)) ||
+    (selected_setting == 7)
+    ) {
+    prev_setting = 3;
+    next_setting = 7;
+
+    lcd.setCursor(0, 0);
+    lcd.print("Type WiFi SSID:");
+
+    lcd.setCursor(0, 2);
+    lcd.write(0);
+    lcd.print(" Char Pos | O Del");
+
+    lcd.setCursor(0, 3);
+    lcd.print("< Confirm | +/- Char");
+  }
+
+  if (selected_setting == 8) {
+    lcd.setCursor(0, 0);
+    lcd.print("Type WiFi Password:");
+
+    lcd.setCursor(0, 2);
+    lcd.write(0);
+    lcd.print(" Char Pos | O Del");
+
+    lcd.setCursor(0, 3);
+    lcd.print("< Confirm | +/- Char");
+  }
+
+  if (selected_setting == 9) {
+    prev_setting = 0;
+    lcd.setCursor(0, 0);
+    lcd.print("IP:");
+
+    lcd.setCursor(0, 1);
+
+    if (current_position == 1) {
+      lcd.print("> Mode");
+      next_setting = 10;
+    }
+
+    if ((current_settings.wifi_mode & 2) == 0) {
+      lcd.setCursor(0, 2);
+      lcd.print("--- END ---");
+
+      lcd.setCursor(0, 3);
+      lcd.print("< IP");
+    } else {
+      lcd.setCursor(0, 2);
+      if (current_position <= 1) {    
+        lcd.print("... MORE ...");
+      } else {
+        current_position = 2;
+        lcd.print("--- END ---");
+      }
+
+      if (current_position == 2) {
+        lcd.print("> Set Addr");
+        next_setting = 11;
+      }
+
+      lcd.setCursor(0, 3);
+      lcd.print("< IP | "); lcd.write(0); lcd.print(" Sw OP");
+    }
+  }
+
+  if (selected_setting == 10) {
+    prev_setting = 9;
+    lcd.setCursor(0, 0);
+    lcd.print("IP Mode:");
+
+    lcd.setCursor(0, 1);
+
+    if ((current_settings.wifi_mode & 1) == 0) {
+      if ((current_settings.wifi_mode & 2) == 0) {
+        lcd.print("[DHCP Cli] |  Fixed ");
+      } else {
+        lcd.print(" DHCP Cli  | [Fixed]");
+      }
+    } else {
+      if ((current_settings.wifi_mode & 2) == 0) {
+        lcd.print("[DHCP Svr] |  Fixed ");
+      } else {
+        lcd.print(" DHCP Svr  | [Fixed]");
+      }
+    }
+
+    lcd.setCursor(0, 3);
+    lcd.print("< IP | +/- Change");
+  }
+
+  if (selected_setting == 11 && (current_settings.wifi_mode & 2) == 0) {
+    prev_setting = 9;
+    lcd.setCursor(0, 0);
+    lcd.print("Set IP Addr:");
+    
+    lcd.setCursor(0, 1);
+    lcd.print(" ");
+    lcd.print(current_settings.static_ip[0]);
+    lcd.print(".");
+    lcd.print(current_settings.static_ip[1]);
+    lcd.print(".");
+    lcd.print(current_settings.static_ip[2]);
+    lcd.print(".");
+    lcd.print(current_settings.static_ip[3]);
+
+    lcd.setCursor(0, 2);
+    lcd.print("+/- Change Number");
+
+    lcd.setCursor(0, 3);
+    lcd.print("< IP | "); lcd.write(0); lcd.print(" Ch Block");
+
+    if (current_position > 4) {
+      current_position = 4;
+    }
+
+    if (current_position == 1) {
+      lcd.setCursor(4, 1);
+    }
+
+    if (current_position == 2) {
+      lcd.setCursor(8, 1);
+    }
+
+    if (current_position == 3) {
+      lcd.setCursor(12, 1);
+    }
+
+    if (current_position == 4) {
+      lcd.setCursor(16, 1);
+    }
+
+    lcd.cursor();
+  }
+
+  lcd.display();
 
   return settings_mode_on > 0;
 }
