@@ -76,15 +76,17 @@ uint16_t clockWriteCntTotal() {
 }
 
 void onDmxDataSend(uint8_t universe, uint8_t ctrlByte, uint8_t *data, const uint16_t size) {
-  if (universe < 4) {
-    uint16_t copyCount = size < dmxChannels ? size : dmxChannels;
-    uint8_t *dstStart = txInputDataBuffers[universe];
-    uint8_t *dst = &dstStart[1];
+  for (uint8_t i = 0; i < 4; i++) {
+    if (live_settings->port_mapping[i] == universe) {
+      uint16_t copyCount = size < dmxChannels ? size : dmxChannels;
+      uint8_t *dstStart = txInputDataBuffers[i];
+      uint8_t *dst = &dstStart[1];
 
-    dstStart[0] = ctrlByte;
-    memcpy(dst, data, copyCount);
+      dstStart[0] = ctrlByte;
+      memcpy(dst, data, copyCount);
 
-    txInputDataBufferReady[universe] = 1;
+      txInputDataBufferReady[i] = 1;
+    }
   }
 }
 
@@ -124,7 +126,6 @@ void setup() {
   const uint32_t mask = ~((SPIMMOSI << SPILMOSI) | (SPIMMISO << SPILMISO));
   SPI_BIT_COUNT_MASK = ((SPI1U1 & mask) | ((bits << SPILMOSI) | (bits << SPILMISO)));
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   lastWifiStatus = WiFi.status();
 
   MyArtNet.setDmxDataCallback(onDmxDataSend);
@@ -152,17 +153,16 @@ void setup() {
 void wifi_routine() {
   wl_status_t currentStatus = WiFi.status();
 
-  if (currentStatus != WL_CONNECTED) {
-    lastWifiStatus = currentStatus;
+  if (currentStatus != WL_CONNECTED && lastWifiStatus == WL_CONNECTED) {
     UDP.stop();
   } else if (currentStatus == WL_CONNECTED && lastWifiStatus != WL_CONNECTED) {
     MyArtNet.ip = WiFi.localIP().v4();
     WiFi.macAddress(MyArtNet.mac);
 
-    UDP.begin(0x1936);
-
-    lastWifiStatus = currentStatus;
+    UDP.begin(0x1936);  
   }
+
+  lastWifiStatus = currentStatus;
 }
 
 void loop() {

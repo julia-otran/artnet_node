@@ -60,18 +60,23 @@ bool keyboardInit;
 
 uint16_t key_press_map;
 
+unsigned long lastKeyPress;
+
 uint8_t is_key_set(uint8_t key) {
   bool last_state = (key_press_map >> key) & 1;
 
   if (keyboard.digitalRead(key) == 0) {
     if (last_state == 1) {
-      key_press_map = key_press_map & ~((uint16_t)(1 << key));
-      return 1;
+      if (millis() - lastKeyPress > 500) {
+        key_press_map = key_press_map & ~((uint16_t)(1 << key));
+        lastKeyPress = millis();
+        return 1;
+      }
     }
   } else {
     key_press_map |= 1 << key;
   }
-
+  
   return 0;
 }
 
@@ -124,7 +129,7 @@ void saveEEPROM() {
   }
 }
 
-void loadSettings() {
+void loadWiFiSettings() {
   if (WiFi.status() != WL_IDLE_STATUS) {
     WiFi.disconnect();
   }
@@ -171,7 +176,7 @@ void loadSettings() {
 
     WiFi.softAP(current_settings.wifi_ssid, current_settings.wifi_pswd);
   } else {
-    if (current_settings.wifi_ssid[0] == 0 && current_settings.wifi_pswd[0] == 0) {
+    if (current_settings.wifi_ssid[0] == 0 || current_settings.wifi_pswd[0] == 0) {
       if (current_settings.wifi_mode & 2) {
         IPAddress address = IPAddress(
           current_settings.static_ip[0], 
@@ -229,7 +234,7 @@ void osd_init() {
     lcd.print("Settings cleared!");
   }
 
-  loadSettings();
+  loadWiFiSettings();
 }
 
 String large_string_scroll;
@@ -332,7 +337,16 @@ void osd_print_wifi_stat(wl_status_t status) {
       osd_state = (status + 1) << 8;
     }
 
-    if (status == WL_WRONG_PASSWORD) {
+    if (status == WL_IDLE_STATUS) {
+        lcd.setCursor(0, 0);
+        lcd.print("WiFi FAILED!");
+        lcd.setCursor(0, 1);
+        lcd.print("Not configured");
+        lcd.setCursor(0, 3);
+        lcd.print("> Settings");
+
+        lcd.display();
+    } else if (status == WL_WRONG_PASSWORD) {
         lcd.setCursor(0, 0);
         lcd.print("WiFi FAILED!");
         lcd.setCursor(0, 1);
@@ -402,23 +416,28 @@ void osd_print_fps(float fps) {
   lcd.display();
 }
 
+bool last_encoder1;
+
+void encoder_read() {
+}
+
 int8_t encoder_value() {
-  bool encoderClock = keyboard.digitalRead(4);
-  bool encoderData = keyboard.digitalRead(5);
+  int8_t encoder_last_read = 0;
 
-  int8_t result = 0;
+  bool encoder1 = keyboard.digitalRead(4, true);
+  bool encoder2 = keyboard.digitalRead(5);
 
-  if (lastEncoderClock == 1 && encoderClock == 0 && encoderData == 1) {
-    result = 1;
+  if (encoder1 != last_encoder1 && encoder1 == encoder2) {
+    encoder_last_read++;
   }
 
-  if (lastEncoderClock == 1 && encoderClock == 0 && encoderData == 0) {
-    result = -1;
+  if (encoder1 != last_encoder1 && encoder1 != encoder2) {
+    encoder_last_read--;
   }
 
-  lastEncoderClock = encoderClock;
+  last_encoder1 = encoder1;
 
-  return result;
+  return encoder_last_read;
 }
 
 void osd_check_keyboard() {
@@ -514,35 +533,58 @@ void osd_process_change_setting() {
 
   if (selected_setting == 1) {
     if (artnet_port_setting > 0) {
-      uint8_t universe = current_settings.port_mapping[artnet_port_setting - 1];
+      int8_t inc = encoder_value();
 
-      universe += encoder_value();
+      if (inc) {
+        uint8_t universe = current_settings.port_mapping[artnet_port_setting - 1];
+        universe += inc;
+        settings_mode_on = 1;
+      
+        if (universe > 0xF) {
+          universe = 0;
+        }
 
-      if (universe > 0xF) {
-        universe = 0;
+        current_settings.port_mapping[artnet_port_setting - 1] = universe;
       }
-
-      current_settings.port_mapping[artnet_port_setting - 1] = universe;
+      
     } else if (current_position == 1) {
-      current_settings.artnet_net += encoder_value();
+      int8_t inc = encoder_value();
 
-      if (current_settings.artnet_net > 0x7F) {
-        current_settings.artnet_net = 0;
+      if (inc != 0) {
+        current_settings.artnet_net += inc;
+
+        if (current_settings.artnet_net > 0x7F) {
+          current_settings.artnet_net = 0;
+        }
+
+        settings_mode_on = 1;
       }
     } else if (current_position == 2) {
-      current_settings.artnet_subnet += encoder_value();
+      int8_t inc = encoder_value();
 
-      if (current_settings.artnet_subnet > 0xF) {
-        current_settings.artnet_subnet = 0;
+      if (inc != 0) {
+        current_settings.artnet_subnet += inc;
+
+        if (current_settings.artnet_subnet > 0xF) {
+          current_settings.artnet_subnet = 0;
+        }
+
+        settings_mode_on = 1;
       }
     }
   }
 
   if (selected_setting == 2) {
-    current_settings.output_channels += encoder_value();
+    int8_t inc = encoder_value();
 
-    if (current_settings.output_channels > 160) {
-      current_settings.output_channels = 0;
+    if (inc) {
+      current_settings.output_channels += inc;
+
+      if (current_settings.output_channels > 160) {
+        current_settings.output_channels = 0;
+      }
+
+      settings_mode_on = 1;
     }
   }
 
@@ -551,6 +593,7 @@ void osd_process_change_setting() {
 
     if (encoder_value()) {
       wifiMode = !wifiMode;
+      settings_mode_on = 1;
     }
 
     current_settings.wifi_mode = (current_settings.wifi_mode & 2) | wifiMode;
@@ -573,7 +616,7 @@ void osd_process_change_setting() {
       lcd.print(" ");
       lcd.setCursor(0, 2);
       lcd.print(". NEXT . | ");
-      lcd.print(1);
+      lcd.write(1);
       lcd.print(" Select");
     }
 
@@ -606,6 +649,7 @@ void osd_process_change_setting() {
 
     if (encoder_value()) {
       dhcp_disable = !dhcp_disable;
+      settings_mode_on = 1;
     }
 
     current_settings.wifi_mode = (current_settings.wifi_mode & 1) | (dhcp_disable << 1);
@@ -613,8 +657,12 @@ void osd_process_change_setting() {
 
   if (selected_setting == 11 && (current_settings.wifi_mode & 2) == 0) {
     uint8_t ipIndex = current_position - 1;
+    int8_t inc = encoder_value();
 
-    current_settings.static_ip[ipIndex] = encoder_value();
+    if (inc) {
+      current_settings.static_ip[ipIndex] += inc;
+      settings_mode_on = 1;
+    }
   }  
 }
 
@@ -655,7 +703,7 @@ uint8_t osd_settings_routine() {
   if (settings_mode_on == 2 && key_enter_set() && prev_setting == 255) {
     memcpy(&live_settings, &current_settings, sizeof(Settings));
     saveEEPROM();
-    loadSettings();
+    loadWiFiSettings();
     return 2;
   }
 
@@ -671,6 +719,7 @@ uint8_t osd_settings_routine() {
 
   if (settings_mode_on == 2) {
     osd_process_change_setting();
+    encoder_read();
   }
 
   if (settings_mode_on != 1) {
@@ -693,11 +742,11 @@ uint8_t osd_settings_routine() {
     lcd.setCursor(0, 2);
 
     if (current_position <= 3) {    
-      lcd.print(1);
-      lcd.print(" Save    | . MORE .");
+      lcd.write(1);
+      lcd.print(" Save   | . MORE .");
     } else {
-      lcd.print(1);
-      lcd.print(" Save    | - END -");
+      lcd.write(1);
+      lcd.print(" Save   | - END -");
       current_position = 4;
     }
 
@@ -929,7 +978,7 @@ uint8_t osd_settings_routine() {
 
     if (countNetworks > 0 && current_position <= countNetworks + 1) {    
       lcd.print(". NEXT . | ");
-      lcd.print(1);
+      lcd.write(1);
       lcd.print(" Select");
 
       if (current_position > 1) {
@@ -942,7 +991,7 @@ uint8_t osd_settings_routine() {
       }
 
       lcd.print("- END - | ");
-      lcd.print(1);
+      lcd.write(1);
       lcd.print(" Select");
     }
 
