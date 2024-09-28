@@ -46,12 +46,23 @@ byte ARROW_CHAR[] = {
 
 byte ENTER_CHAR[8] = {
 	0b00000,
-	0b00100,
-	0b01110,
-	0b10001,
-	0b10001,
-	0b01110,
-	0b00100,
+	0b00000,
+	0b00000,
+	0b01001,
+	0b11111,
+	0b01000,
+	0b00000,
+	0b00000
+};
+
+byte CHECK_CHAR[8] = {
+	0b00000,
+	0b00001,
+	0b00011,
+	0b10110,
+	0b11100,
+	0b01000,
+	0b00000,
 	0b00000
 };
 
@@ -212,6 +223,7 @@ void osd_init() {
   lcd.begin(LCD_COLUMN_COUNT, 4);
   lcd.createChar(0, ARROW_CHAR);
   lcd.createChar(1, ENTER_CHAR);
+  lcd.createChar(2, CHECK_CHAR);
   lcd.setContrast(0x0F);
   lcd.clear();
   lcd.print("JSLC");
@@ -495,11 +507,11 @@ void osd_process_on_screen_keyboard(char* data, uint16_t limit) {
   lcd.cursor();
 
   if (key_enter_set()) {
-    data[stringLength - 1] = 0;
-
     for (uint16_t i = currentCharacterPos; i < stringLength - 1; i++) {
       data[i] = data[i+1];
     }
+
+    data[stringLength - 1] = 0;
 
     if (currentCharacterPos > 0 && data[currentCharacterPos] == 0 && current_position > 1) {
       current_position--;
@@ -615,19 +627,19 @@ void osd_process_change_setting() {
       lcd.write(0);
       lcd.print(" ");
       lcd.setCursor(0, 2);
-      lcd.print(". NEXT . | ");
-      lcd.write(1);
-      lcd.print(" Select");
+      lcd.print(". NEXT .            ");
     }
 
-    if (key_enter_set()) {
+    if (key_enter_set() && n > 0 && current_position > 1) {
       String selectedSSID = WiFi.SSID(current_position - 2);
 
-      if (selectedSSID.length() < sizeof(current_settings.wifi_ssid)) {
+      if (selectedSSID.length() > 0 && selectedSSID.length() - 1 < sizeof(current_settings.wifi_ssid)) {
         for (uint8_t i = 0; i < selectedSSID.length(); i++) {
           current_settings.wifi_ssid[i] = selectedSSID.charAt(i);
         }
-        current_settings.wifi_ssid[selectedSSID.length() - 1] = 0;
+        current_settings.wifi_ssid[selectedSSID.length()] = 0;
+
+        settings_mode_on = 1;
       }
     }
   }
@@ -700,7 +712,7 @@ uint8_t osd_settings_routine() {
     current_position = 1;
   }
 
-  if (settings_mode_on == 2 && key_enter_set() && prev_setting == 255) {
+  if (settings_mode_on == 2 && prev_setting == 255 && key_enter_set()) {
     memcpy(&live_settings, &current_settings, sizeof(Settings));
     saveEEPROM();
     loadWiFiSettings();
@@ -977,13 +989,23 @@ uint8_t osd_settings_routine() {
     int8_t countNetworks = WiFi.scanComplete();
 
     if (countNetworks > 0 && current_position <= countNetworks + 1) {    
-      lcd.print(". NEXT . | ");
-      lcd.write(1);
-      lcd.print(" Select");
+      lcd.print("NEXT");
 
       if (current_position > 1) {
+        String ssid = WiFi.SSID(current_position - 2);
+
+        lcd.print(" | ");
+
+        if (ssid.equals(current_settings.wifi_ssid)) {
+          lcd.write(2);
+          lcd.print(" Selected");
+        } else {
+          lcd.write(1);
+          lcd.print(" Select");
+        }
+        
         lcd.setCursor(0, 1);
-        osd_scroll_large_string(WiFi.SSID(current_position - 2));
+        osd_scroll_large_string(ssid);
       }
     } else {
       if (countNetworks > 0) {
@@ -1004,7 +1026,12 @@ uint8_t osd_settings_routine() {
     (selected_setting == 6 && (current_settings.wifi_mode & 1)) ||
     (selected_setting == 7)
     ) {
-    prev_setting = 3;
+    if (current_settings.wifi_mode & 1) {
+      prev_setting = 3;
+    } else {
+      prev_setting = 5;
+    }
+
     next_setting = 7;
 
     lcd.setCursor(0, 0);
