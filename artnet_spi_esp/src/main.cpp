@@ -65,6 +65,8 @@ uint8_t breakStatus;
 
 wl_status_t lastWifiStatus;
 
+Settings* live_settings;
+
 uint16_t clockWriteCntTotal() {
   uint32_t bitsToSend = (dmxChannels + 1) * 11;
   uint32_t clockSentPerByte = 5;
@@ -92,9 +94,14 @@ void sendAtrNetPacket(uint32_t dstIP, uint16_t dstPort, uint8_t *data, uint32_t 
   UDP.endPacket();
 }
 
-void setup() {
-  dmxChannels = 512;
+void loadSettings() {
+  live_settings = osd_get_settings();
+  dmxChannels = osd_get_channel_quantity();
+  MyArtNet.net = live_settings->artnet_net;
+  MyArtNet.subnet = live_settings->artnet_subnet;
+}
 
+void setup() {
   pinMode(CS_DEMULT_PIN_BIT0, OUTPUT);
   pinMode(CS_DEMULT_PIN_BIT1, OUTPUT);
   pinMode(DMX_BREAK_PIN, OUTPUT);
@@ -138,6 +145,8 @@ void setup() {
   lastFrameCheckInterval = millis();
 
   breakStartAt = 0;
+
+  loadSettings();
 }
 
 void wifi_routine() {
@@ -177,7 +186,7 @@ void loop() {
 
     if (settings_routine_result > 0) {
       if (settings_routine_result == 2) {
-        // Reload settings
+        loadSettings();
       }
     }
 

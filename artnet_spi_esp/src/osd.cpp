@@ -7,6 +7,8 @@
 #include "osd.h"
 #include <PCF8575.h>
 
+#define LCD_COLUMN_COUNT 20
+
 char KEYBOARD_SYMBOLS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890-=+{}[]()<>*&%$#@!\"'\\/;:.,?|Çç ";
 
 hd44780_I2Cexp lcd(0x27);
@@ -14,6 +16,7 @@ hd44780_I2Cexp lcd(0x27);
 PCF8575 keyboard(0x20);
 
 static Settings current_settings;
+static Settings live_settings;
 
 byte settings_mode_on;
 byte selected_setting;
@@ -41,12 +44,59 @@ byte ARROW_CHAR[] = {
   B00100
 };
 
+byte ENTER_CHAR[8] = {
+	0b00000,
+	0b00100,
+	0b01110,
+	0b10001,
+	0b10001,
+	0b01110,
+	0b00100,
+	0b00000
+};
 
 uint16_t osd_state;
 bool keyboardInit;
 
+uint16_t key_press_map;
+
+uint8_t is_key_set(uint8_t key) {
+  bool last_state = (key_press_map >> key) & 1;
+
+  if (keyboard.digitalRead(key) == 0) {
+    if (last_state == 1) {
+      key_press_map = key_press_map & ~((uint16_t)(1 << key));
+      return 1;
+    }
+  } else {
+    key_press_map |= 1 << key;
+  }
+
+  return 0;
+}
+
+uint8_t key_left_set() {
+  return is_key_set(0);
+}
+
+uint8_t key_right_set() {
+  return is_key_set(1);
+}
+
+uint8_t key_up_set() {
+  return is_key_set(2);
+}
+
+uint8_t key_down_set() {
+  return is_key_set(3);
+}
+
+uint8_t key_enter_set() {
+  return is_key_set(6);
+}
+
 Settings* osd_get_settings() {
-    return &current_settings;
+    return &live_settings;
 }
 
 float get_fps_estimate() {
@@ -56,24 +106,91 @@ float get_fps_estimate() {
   return (float) fps;
 }
 
+void loadEEPROM() {
+  byte *settings_raw = (byte*) &current_settings;
 
-// void loadEEPROM() {
-//   byte *settings_raw = (byte*) &current_settings;
+  for (uint16_t i = 0; i < sizeof(current_settings); i++) {
+    settings_raw[i] = EEPROM.read(i);
+  }
 
-//   for (uint16_t i = 0; i < sizeof(current_settings); i++) {
-//     settings_raw[i] = EEPROM.read(i);
-//   }
-// }
+  memcpy(&live_settings, &current_settings, sizeof(Settings));
+}
 
-// void saveEEPROM() {
-//   byte *settings_raw = (byte*) &current_settings;
+void saveEEPROM() {
+  byte *settings_raw = (byte*) &current_settings;
 
-//   for (uint16_t i = 0; i < sizeof(current_settings); i++) {
-//     EEPROM.write(i, settings_raw[i]);
-//   }
-// }
+  for (uint16_t i = 0; i < sizeof(current_settings); i++) {
+    EEPROM.write(i, settings_raw[i]);
+  }
+}
+
+void loadSettings() {
+  if (WiFi.status() != WL_IDLE_STATUS) {
+    WiFi.disconnect();
+  }
+
+  if (current_settings.static_ip[0] == 0 || current_settings.static_ip[3] == 0) {
+    current_settings.static_ip[0] = 192;
+    current_settings.static_ip[0] = 168;
+    current_settings.static_ip[0] = 1;
+    current_settings.static_ip[0] = 99;
+  }
+
+  if (current_settings.wifi_mode & 1) {
+    IPAddress address = IPAddress(
+      current_settings.static_ip[0], 
+      current_settings.static_ip[1], 
+      current_settings.static_ip[2], 
+      current_settings.static_ip[3]
+    );
+
+    WiFi.softAPConfig(address, IPAddress(0, 0, 0, 0), IPAddress(255, 255, 255, 0));
+
+    if (current_settings.wifi_ssid[0] == 0) {
+      current_settings.wifi_ssid[0] = 'J';
+      current_settings.wifi_ssid[1] = 'S';
+      current_settings.wifi_ssid[2] = 'L';
+      current_settings.wifi_ssid[3] = 'C';
+      current_settings.wifi_ssid[4] = 0;
+    }
+
+    if (current_settings.wifi_pswd[0] == 0) {
+      current_settings.wifi_ssid[0] = 'J';
+      current_settings.wifi_ssid[1] = 'S';
+      current_settings.wifi_ssid[2] = 'L';
+      current_settings.wifi_ssid[3] = 'C';
+      current_settings.wifi_ssid[4] = '-';
+      current_settings.wifi_ssid[5] = 'A';
+      current_settings.wifi_ssid[6] = 'R';
+      current_settings.wifi_ssid[7] = 'T';
+      current_settings.wifi_ssid[8] = 'N';
+      current_settings.wifi_ssid[9] = 'E';
+      current_settings.wifi_ssid[10] = 'T';
+      current_settings.wifi_ssid[11] = 0;
+    }
+
+    WiFi.softAP(current_settings.wifi_ssid, current_settings.wifi_pswd);
+  } else {
+    if (current_settings.wifi_ssid[0] == 0 && current_settings.wifi_pswd[0] == 0) {
+      if (current_settings.wifi_mode & 2) {
+        IPAddress address = IPAddress(
+          current_settings.static_ip[0], 
+          current_settings.static_ip[1], 
+          current_settings.static_ip[2], 
+          current_settings.static_ip[3]
+        );
+
+        WiFi.config(address, IPAddress(0, 0, 0, 0), IPAddress(255, 255, 255, 0));
+      }
+
+      WiFi.begin(current_settings.wifi_ssid, current_settings.wifi_pswd);
+    }
+  }
+}
 
 void osd_init() {
+  loadEEPROM();
+
   Wire.begin();
   Wire.setClock(100000);
 
@@ -87,8 +204,9 @@ void osd_init() {
 
   keyboardInit = keyboard.begin();
 
-  lcd.begin(20, 4);
+  lcd.begin(LCD_COLUMN_COUNT, 4);
   lcd.createChar(0, ARROW_CHAR);
+  lcd.createChar(1, ENTER_CHAR);
   lcd.setContrast(0x0F);
   lcd.clear();
   lcd.print("JSLC");
@@ -101,6 +219,17 @@ void osd_init() {
   }
 
   lcd.display();
+
+  if (keyboardInit && key_left_set()) {
+    memset(&current_settings, 0, sizeof(Settings));
+    memset(&live_settings, 0, sizeof(Settings));
+    saveEEPROM();
+
+    lcd.setCursor(0, 3);
+    lcd.print("Settings cleared!");
+  }
+
+  loadSettings();
 }
 
 String large_string_scroll;
@@ -121,13 +250,13 @@ void osd_scroll_routine() {
 
   large_string_scroll_last_increment = millis();
 
-  if (str_length <= 20) {
+  if (str_length <= LCD_COLUMN_COUNT) {
     lcd.setCursor(0, 1);
     lcd.print(large_string_scroll);
     return;
   }
 
-  for (uint8_t i = 0; i < 20; i++) {
+  for (uint8_t i = 0; i < LCD_COLUMN_COUNT; i++) {
     lcd.setCursor(i, 1);
 
     if (i + position < str_length) { 
@@ -273,39 +402,6 @@ void osd_print_fps(float fps) {
   lcd.display();
 }
 
-uint16_t key_press_map;
-
-uint8_t is_key_set(uint8_t key) {
-  bool last_state = (key_press_map >> key) & 1;
-
-  if (keyboard.digitalRead(key) == 0) {
-    if (last_state == 1) {
-      key_press_map = key_press_map & ~((uint16_t)(1 << key));
-      return 1;
-    }
-  } else {
-    key_press_map |= 1 << key;
-  }
-
-  return 0;
-}
-
-uint8_t key_left_set() {
-  return is_key_set(0);
-}
-
-uint8_t key_right_set() {
-  return is_key_set(1);
-}
-
-uint8_t key_up_set() {
-  return is_key_set(2);
-}
-
-uint8_t key_down_set() {
-  return is_key_set(3);
-}
-
 int8_t encoder_value() {
   bool encoderClock = keyboard.digitalRead(4);
   bool encoderData = keyboard.digitalRead(5);
@@ -338,41 +434,106 @@ void osd_check_keyboard() {
   }
 }
 
+void osd_process_on_screen_keyboard(char* data, uint16_t limit) {
+  uint16_t currentCharacterPos = current_position - 1;
+  uint16_t stringLength = strlen(data);
+
+  if (currentCharacterPos >= limit) {
+    currentCharacterPos = limit - 1;
+  }
+
+  int16_t printStartPosition = currentCharacterPos - (LCD_COLUMN_COUNT/2);
+
+  if (printStartPosition < 0) {
+    printStartPosition = 0;
+  }
+
+  if (printStartPosition - (LCD_COLUMN_COUNT - 1) >= stringLength) {
+    printStartPosition = stringLength - LCD_COLUMN_COUNT;
+  }
+
+  uint16_t cursorPosition = currentCharacterPos - printStartPosition;
+
+  lcd.noCursor();
+  lcd.setCursor(0, 1);
+  
+  for (uint16_t i = 0; i < (LCD_COLUMN_COUNT - 1); i++) {
+    uint16_t position = i + printStartPosition;
+
+    if (position < stringLength && data[position]) {
+      lcd.print(data[position]);
+    } else {
+      lcd.print(" ");
+    }
+  }
+
+  if (printStartPosition + LCD_COLUMN_COUNT >= stringLength) {
+    lcd.setCursor(LCD_COLUMN_COUNT, 1);
+    lcd.print(">");
+  }
+
+  lcd.setCursor(cursorPosition, 1);
+  lcd.cursor();
+
+  if (key_enter_set()) {
+    data[stringLength - 1] = 0;
+
+    for (uint16_t i = currentCharacterPos; i < stringLength - 1; i++) {
+      data[i] = data[i+1];
+    }
+
+    if (currentCharacterPos > 0 && data[currentCharacterPos] == 0 && current_position > 1) {
+      current_position--;
+    } 
+  } else {
+    uint8_t currentCharIndex = 0;
+
+    if (data[currentCharacterPos] == 0) {
+      data[currentCharacterPos] = KEYBOARD_SYMBOLS[0];
+      data[currentCharacterPos + 1] = 0;
+    }
+
+    for (uint8_t i = 0; i < sizeof(KEYBOARD_SYMBOLS); i++) {
+      if (KEYBOARD_SYMBOLS[i] == data[currentCharacterPos]) {
+        currentCharIndex = i;
+      }
+    }
+
+    currentCharIndex += encoder_value();
+
+    if (currentCharIndex > sizeof(KEYBOARD_SYMBOLS) - 1) {
+      currentCharIndex = 0;
+    }
+
+    data[currentCharacterPos] = KEYBOARD_SYMBOLS[currentCharIndex];
+  }
+}
+
 void osd_process_change_setting() {
   osd_scroll_routine();
 
   if (selected_setting == 1) {
-    if (artnet_port_setting == 1) {
-      if (current_position == 1) {
-        current_settings.address_mapping[0].net += encoder_value();
+    if (artnet_port_setting > 0) {
+      uint8_t universe = current_settings.port_mapping[artnet_port_setting - 1];
 
-        if (current_settings.address_mapping[0].net > 127) {
-          current_settings.address_mapping[0].net = 0;
-        }
+      universe += encoder_value();
+
+      if (universe > 0xF) {
+        universe = 0;
       }
-      if (current_position == 2) {
-        uint8_t sub = current_settings.address_mapping[0].subuni >> 4;
-        uint8_t uni = current_settings.address_mapping[0].subuni & 0xF;
 
-        sub = sub + encoder_value();
+      current_settings.port_mapping[artnet_port_setting - 1] = universe;
+    } else if (current_position == 1) {
+      current_settings.artnet_net += encoder_value();
 
-        if (sub > 0xF) {
-          sub = 0;
-        }
-
-        current_settings.address_mapping[0].subuni = (sub << 4) | (uni & 0xF);
+      if (current_settings.artnet_net > 0x7F) {
+        current_settings.artnet_net = 0;
       }
-      if (current_position == 3) {
-        uint8_t sub = current_settings.address_mapping[0].subuni >> 4;
-        uint8_t uni = current_settings.address_mapping[0].subuni & 0xF;
+    } else if (current_position == 2) {
+      current_settings.artnet_subnet += encoder_value();
 
-        uni = uni + encoder_value();
-
-        if (uni > 0xF) {
-          uni = 0;
-        }
-
-        current_settings.address_mapping[0].subuni = (sub << 4) | (uni & 0xF);
+      if (current_settings.artnet_subnet > 0xF) {
+        current_settings.artnet_subnet = 0;
       }
     }
   }
@@ -411,9 +572,50 @@ void osd_process_change_setting() {
       lcd.write(0);
       lcd.print(" ");
       lcd.setCursor(0, 2);
-      lcd.print("... NEXT ...");
+      lcd.print(". NEXT . | ");
+      lcd.print(1);
+      lcd.print(" Select");
+    }
+
+    if (key_enter_set()) {
+      String selectedSSID = WiFi.SSID(current_position - 2);
+
+      if (selectedSSID.length() < sizeof(current_settings.wifi_ssid)) {
+        for (uint8_t i = 0; i < selectedSSID.length(); i++) {
+          current_settings.wifi_ssid[i] = selectedSSID.charAt(i);
+        }
+        current_settings.wifi_ssid[selectedSSID.length() - 1] = 0;
+      }
     }
   }
+
+  if (
+    (selected_setting == 5 && (current_settings.wifi_mode & 1)) ||
+    (selected_setting == 6 && (current_settings.wifi_mode & 1)) ||
+    (selected_setting == 7)
+  ) {
+    osd_process_on_screen_keyboard(current_settings.wifi_ssid, sizeof(current_settings.wifi_ssid));
+  }
+
+  if (selected_setting == 8) {
+    osd_process_on_screen_keyboard(current_settings.wifi_pswd, sizeof(current_settings.wifi_pswd));
+  }
+
+  if (selected_setting == 10) {
+    bool dhcp_disable = current_settings.wifi_mode & 2;
+
+    if (encoder_value()) {
+      dhcp_disable = !dhcp_disable;
+    }
+
+    current_settings.wifi_mode = (current_settings.wifi_mode & 1) | (dhcp_disable << 1);
+  }
+
+  if (selected_setting == 11 && (current_settings.wifi_mode & 2) == 0) {
+    uint8_t ipIndex = current_position - 1;
+
+    current_settings.static_ip[ipIndex] = encoder_value();
+  }  
 }
 
 uint8_t osd_settings_routine() {
@@ -422,8 +624,8 @@ uint8_t osd_settings_routine() {
   }
 
   if (settings_mode_on == 2 && key_right_set()) {
-      if (selected_setting == 1 && next_setting == 1) {
-        artnet_port_setting = current_position;
+      if (selected_setting == 1 && next_setting == 1 && current_position > 2) {
+        artnet_port_setting = current_position - 2;
       }
 
       settings_mode_on = 1;
@@ -442,12 +644,20 @@ uint8_t osd_settings_routine() {
       }
     } else {
       settings_mode_on = 0;
-      return 2;
+      memcpy(&current_settings, &live_settings, sizeof(Settings));
+      return 0;
     }
 
     settings_mode_on = 1;
     current_position = 1;
-  }  
+  }
+
+  if (settings_mode_on == 2 && key_enter_set() && prev_setting == 255) {
+    memcpy(&live_settings, &current_settings, sizeof(Settings));
+    saveEEPROM();
+    loadSettings();
+    return 2;
+  }
 
   if (settings_mode_on == 2 && key_up_set() && current_position > 1) {
       settings_mode_on = 1;
@@ -472,6 +682,7 @@ uint8_t osd_settings_routine() {
   settings_mode_on = 2;
 
   lcd.clear();
+  lcd.noCursor();
   
   if (selected_setting == 0) {
     prev_setting = 255;
@@ -482,9 +693,11 @@ uint8_t osd_settings_routine() {
     lcd.setCursor(0, 2);
 
     if (current_position <= 3) {    
-      lcd.print("... MORE ...");
+      lcd.print(1);
+      lcd.print(" Save    | . MORE .");
     } else {
-      lcd.print("--- END ---");
+      lcd.print(1);
+      lcd.print(" Save    | - END -");
       current_position = 4;
     }
 
@@ -511,7 +724,7 @@ uint8_t osd_settings_routine() {
     }
 
     lcd.setCursor(0, 3);
-    lcd.print("< Save | "); lcd.write(0); lcd.print(" Sw OP");
+    lcd.print("< Cancel | "); lcd.write(0); lcd.print(" Sw OP");
   }
 
   if (selected_setting == 1 && artnet_port_setting == 0) {
@@ -521,28 +734,42 @@ uint8_t osd_settings_routine() {
 
     lcd.setCursor(0, 2);
 
-    if (current_position <= 3) {    
+    if (current_position <= 5) {    
       lcd.print("... MORE ...");
     } else {
       lcd.print("--- END ---");
-      current_position = 4;
+      current_position = 6;
     }
 
     lcd.setCursor(0, 1);
 
     if (current_position == 1) {
-      lcd.print("> Port 1 SRC");
+      lcd.print("> Net: ");
+      lcd.print(current_settings.artnet_net);
+      lcd.setCursor(17, 1);
+      lcd.print("+/-");
     }
 
     if (current_position == 2) {
-      lcd.print("> Port 2 SRC");
+      lcd.print("> Subnet: ");
+      lcd.print(current_settings.artnet_subnet);
+      lcd.setCursor(17, 1);
+      lcd.print("+/-");
     }
 
     if (current_position == 3) {
-      lcd.print("> Port 3 SRC");
+      lcd.print("> Port 1 SRC");
     }
 
     if (current_position == 4) {
+      lcd.print("> Port 2 SRC");
+    }
+
+    if (current_position == 5) {
+      lcd.print("> Port 3 SRC");
+    }
+
+    if (current_position == 6) {
       lcd.print("> Port 4 SRC");
     }
 
@@ -558,29 +785,14 @@ uint8_t osd_settings_routine() {
 
     lcd.setCursor(0, 2);
 
-    if (current_position <= 2) {    
-      lcd.print("... MORE ...");
-    } else {
-      current_position = 3;
+    if (current_position <= 1) {    
+      current_position = 1;
       lcd.print("--- END ---");
     }
 
     lcd.setCursor(0, 1);
-
-    if (current_position == 1) {
-      lcd.print("Net:    ");
-      lcd.print(current_settings.address_mapping[artnet_port_setting - 1].net);
-    }
-
-    if (current_position == 2) {
-      lcd.print("Subnet: ");
-      lcd.print(current_settings.address_mapping[artnet_port_setting - 1].subuni >> 4);
-    }
-
-    if (current_position == 3) {
-      lcd.print("Univer: ");
-      lcd.print(current_settings.address_mapping[artnet_port_setting - 1].subuni & 0xF);
-    }
+    lcd.print("Univer: ");
+    lcd.print(current_settings.port_mapping[artnet_port_setting - 1]);
 
     lcd.setCursor(17, 1);
     lcd.print("+/-");
@@ -716,7 +928,9 @@ uint8_t osd_settings_routine() {
     int8_t countNetworks = WiFi.scanComplete();
 
     if (countNetworks > 0 && current_position <= countNetworks + 1) {    
-      lcd.print("... NEXT ...");
+      lcd.print(". NEXT . | ");
+      lcd.print(1);
+      lcd.print(" Select");
 
       if (current_position > 1) {
         lcd.setCursor(0, 1);
@@ -727,7 +941,9 @@ uint8_t osd_settings_routine() {
         current_position = countNetworks + 2;
       }
 
-      lcd.print("--- END ---");
+      lcd.print("- END - | ");
+      lcd.print(1);
+      lcd.print(" Select");
     }
 
     lcd.setCursor(0, 3);
@@ -747,7 +963,9 @@ uint8_t osd_settings_routine() {
 
     lcd.setCursor(0, 2);
     lcd.write(0);
-    lcd.print(" Char Pos | O Del");
+    lcd.print(" Char Pos | ");
+    lcd.write(1);
+    lcd.print(" Del");
 
     lcd.setCursor(0, 3);
     lcd.print("< Confirm | +/- Char");

@@ -2,16 +2,13 @@
 #include <ESP8266WiFi.h>
 
 typedef struct {
-  byte net;
-  byte subuni;
-} ArtNetAddress;
-
-typedef struct {
   char wifi_ssid[200];
   char wifi_pswd[200];
   byte wifi_mode;
   byte static_ip[4];
-  ArtNetAddress address_mapping[4];
+  byte artnet_net;
+  byte artnet_subnet;
+  byte port_mapping[4];
   byte output_channels;
 } Settings;
 
