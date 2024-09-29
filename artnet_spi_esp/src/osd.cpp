@@ -10,6 +10,7 @@
 #define LCD_COLUMN_COUNT 20
 
 char KEYBOARD_SYMBOLS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890-=+{}[]()<>*&%$#@!\"'\\/;:.,?|Çç ";
+char TOGGLE_SYMBOLS[] = "Aa1- ";
 
 hd44780_I2Cexp lcd(0x27);
 
@@ -63,6 +64,17 @@ byte CHECK_CHAR[8] = {
 	0b11100,
 	0b01000,
 	0b00000,
+	0b00000
+};
+
+byte BOTTOM_CHAR[8] = {
+	0b00000,
+	0b00100,
+	0b00100,
+	0b00100,
+	0b10101,
+	0b01110,
+	0b00100,
 	0b00000
 };
 
@@ -138,6 +150,8 @@ void saveEEPROM() {
   for (uint16_t i = 0; i < sizeof(current_settings); i++) {
     EEPROM.write(i, settings_raw[i]);
   }
+
+  EEPROM.commit();
 }
 
 void loadWiFiSettings() {
@@ -187,7 +201,7 @@ void loadWiFiSettings() {
 
     WiFi.softAP(current_settings.wifi_ssid, current_settings.wifi_pswd);
   } else {
-    if (current_settings.wifi_ssid[0] == 0 || current_settings.wifi_pswd[0] == 0) {
+    if (current_settings.wifi_ssid[0] != 0 && current_settings.wifi_pswd[0] != 0) {
       if (current_settings.wifi_mode & 2) {
         IPAddress address = IPAddress(
           current_settings.static_ip[0], 
@@ -205,7 +219,7 @@ void loadWiFiSettings() {
 }
 
 void osd_init() {
-  loadEEPROM();
+  EEPROM.begin(sizeof(Settings));
 
   Wire.begin();
   Wire.setClock(100000);
@@ -224,6 +238,7 @@ void osd_init() {
   lcd.createChar(0, ARROW_CHAR);
   lcd.createChar(1, ENTER_CHAR);
   lcd.createChar(2, CHECK_CHAR);
+  lcd.createChar(3, BOTTOM_CHAR);
   lcd.setContrast(0x0F);
   lcd.clear();
   lcd.print("JSLC");
@@ -237,14 +252,23 @@ void osd_init() {
 
   lcd.display();
 
-  if (keyboardInit && key_left_set()) {
-    memset(&current_settings, 0, sizeof(Settings));
-    memset(&live_settings, 0, sizeof(Settings));
-    saveEEPROM();
+  unsigned long currentTime = millis();
 
-    lcd.setCursor(0, 3);
-    lcd.print("Settings cleared!");
+  while (millis() - currentTime < 1750) {
+    if (keyboardInit && key_left_set()) {
+      memset(&current_settings, 0, sizeof(Settings));
+      memset(&live_settings, 0, sizeof(Settings));
+      saveEEPROM();
+
+      lcd.setCursor(0, 3);
+      lcd.print("Settings cleared!");
+
+      delay(1750);
+      break;
+    }
   }
+  
+  loadEEPROM();
 
   loadWiFiSettings();
 }
@@ -376,6 +400,24 @@ void osd_print_wifi_stat(wl_status_t status) {
         lcd.print("> Settings");
 
         lcd.display();
+    } else if (status == WL_NO_SSID_AVAIL) {
+        lcd.setCursor(0, 0);
+        lcd.print("WiFi FAILED!");
+        lcd.setCursor(0, 1);
+        lcd.print("SSID Not Avail.");
+        lcd.setCursor(0, 3);
+        lcd.print("> Settings");
+
+        lcd.display();
+    } else if (status == WL_CONNECTION_LOST) {
+        lcd.setCursor(0, 0);
+        lcd.print("WiFi FAILED!");
+        lcd.setCursor(0, 1);
+        lcd.print("Connection Lost");
+        lcd.setCursor(0, 3);
+        lcd.print("> Settings");
+
+        lcd.display();
     } else {
         osd_print_wifi_connecting();
     }
@@ -466,6 +508,8 @@ void osd_check_keyboard() {
 }
 
 void osd_process_on_screen_keyboard(char* data, uint16_t limit) {
+  settings_mode_on = 3;
+
   uint16_t currentCharacterPos = current_position - 1;
   uint16_t stringLength = strlen(data);
 
@@ -498,15 +542,15 @@ void osd_process_on_screen_keyboard(char* data, uint16_t limit) {
     }
   }
 
-  if (printStartPosition + LCD_COLUMN_COUNT >= stringLength) {
-    lcd.setCursor(LCD_COLUMN_COUNT, 1);
+  if (printStartPosition + LCD_COLUMN_COUNT <= stringLength) {
+    lcd.setCursor(LCD_COLUMN_COUNT - 1, 1);
     lcd.print(">");
   }
 
   lcd.setCursor(cursorPosition, 1);
   lcd.cursor();
 
-  if (key_enter_set()) {
+  if (key_down_set()) {
     for (uint16_t i = currentCharacterPos; i < stringLength - 1; i++) {
       data[i] = data[i+1];
     }
@@ -530,7 +574,28 @@ void osd_process_on_screen_keyboard(char* data, uint16_t limit) {
       }
     }
 
-    currentCharIndex += encoder_value();
+    if (key_up_set()) {
+      bool found = 0;
+
+      for (uint8_t i = currentCharIndex + 1; i < sizeof(KEYBOARD_SYMBOLS); i++) {
+        for (uint8_t j = 0; j < sizeof(TOGGLE_SYMBOLS); j++) {
+          if (KEYBOARD_SYMBOLS[i] == TOGGLE_SYMBOLS[j]) {
+            currentCharIndex = i;
+            found = 1;
+          }
+        }
+
+        if (found) {
+          break;
+        }
+      }
+
+      if (found == 0) {
+        currentCharIndex = 0;
+      }
+    } else {
+      currentCharIndex += encoder_value();
+    }
 
     if (currentCharIndex > sizeof(KEYBOARD_SYMBOLS) - 1) {
       currentCharIndex = 0;
@@ -716,6 +781,7 @@ uint8_t osd_settings_routine() {
     memcpy(&live_settings, &current_settings, sizeof(Settings));
     saveEEPROM();
     loadWiFiSettings();
+    settings_mode_on = 0;
     return 2;
   }
 
@@ -729,9 +795,22 @@ uint8_t osd_settings_routine() {
       current_position++;
   }
 
-  if (settings_mode_on == 2) {
+  if (settings_mode_on == 3 && key_left_set() && current_position > 1) {
+    current_position--;
+  }
+
+  if (settings_mode_on == 3 && key_right_set()) {
+    current_position++;
+  }
+
+  if (settings_mode_on == 3 && key_enter_set()) {
+    selected_setting = prev_setting;
+    settings_mode_on = 1;
+    current_position = 1;
+  }
+
+  if (settings_mode_on == 2 || settings_mode_on == 3) {
     osd_process_change_setting();
-    encoder_read();
   }
 
   if (settings_mode_on != 1) {
@@ -1038,13 +1117,13 @@ uint8_t osd_settings_routine() {
     lcd.print("Type WiFi SSID:");
 
     lcd.setCursor(0, 2);
-    lcd.write(0);
-    lcd.print(" Char Pos | ");
-    lcd.write(1);
+    lcd.print("<> Char Pos | ");
+    lcd.write(3);
     lcd.print(" Del");
 
     lcd.setCursor(0, 3);
-    lcd.print("< Confirm | +/- Char");
+    lcd.write(1);
+    lcd.print(" Set | +/- Char");
   }
 
   if (selected_setting == 8) {
@@ -1052,11 +1131,13 @@ uint8_t osd_settings_routine() {
     lcd.print("Type WiFi Password:");
 
     lcd.setCursor(0, 2);
-    lcd.write(0);
-    lcd.print(" Char Pos | O Del");
+    lcd.print("<> Char Pos | ");
+    lcd.write(3);
+    lcd.print(" Del");
 
     lcd.setCursor(0, 3);
-    lcd.print("< Confirm | +/- Char");
+    lcd.write(1);
+    lcd.print(" Set | +/- Char");
   }
 
   if (selected_setting == 9) {

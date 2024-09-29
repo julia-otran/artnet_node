@@ -116,7 +116,6 @@ void setup() {
   pinMode(GPIO_ID_PIN(4), OUTPUT);
 
   osd_init();
-  delay(1750);
 
   SPI.begin();
   SPI.setHwCs(0);
