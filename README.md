@@ -1,6 +1,4 @@
-# ESP12-E + ATtiny DMX512 ArtNet
-
-## Under Construction
+# ESP12F (ESP8266) + ATtiny DMX512 ArtNet Interface
 
 ### Basic Components
 
@@ -16,4 +14,9 @@
 
 ### Electric Diagram
 
-https://crcit.net/c/7fb5a744346b4a50a5064630ad6b27e6
+The electric diagram was built with EasyEDA. Just import the JSON file.
+
+There are 3 Sheets into EasyEDA project.
+
+- The J14 from Sheet1 should be connected to J5 on Sheet2.
+- Each one of J10, J11, J12 and J13 should be connected to J2 on Sheet3 (You will need 4 units of Sheet3 Output Isolation module to get the 4 universes and connect each one to the outputs of Sheet2).
