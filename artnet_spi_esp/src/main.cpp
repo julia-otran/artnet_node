@@ -268,10 +268,13 @@ void loop() {
 
       if (universe == 0) {
         GPOC = 1 << CS_DEMULT_PIN_BIT0;
-        GPOS = 1 << CS_DEMULT_PIN_BIT1;
+        GPOC = 1 << CS_DEMULT_PIN_BIT1;
       } else if (universe == 1) {
         GPOS = 1 << CS_DEMULT_PIN_BIT0;
         GPOC = 1 << CS_DEMULT_PIN_BIT1;
+      } else if (universe == 2) {
+        GPOC = 1 << CS_DEMULT_PIN_BIT0;
+        GPOS = 1 << CS_DEMULT_PIN_BIT1;
       } else {
         GPOS = 1 << CS_DEMULT_PIN_BIT0;
         GPOS = 1 << CS_DEMULT_PIN_BIT1;
