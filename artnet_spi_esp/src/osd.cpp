@@ -112,7 +112,7 @@ uint8_t key_right_set() {
 }
 
 uint8_t key_up_set() {
-  return is_key_set(2);
+  return is_key_set(7);
 }
 
 uint8_t key_down_set() {
@@ -224,13 +224,13 @@ void osd_init() {
   Wire.begin();
   Wire.setClock(100000);
 
-  for (byte pin = 0; pin < 13; pin++) {
+  for (byte pin = 0; pin < 8; pin++) {
     keyboard.pinMode(pin, INPUT_PULLUP);
   }
 
-  keyboard.pinMode(13, OUTPUT, LOW);
-  keyboard.pinMode(14, OUTPUT, LOW);
-  keyboard.pinMode(15, OUTPUT, LOW);
+  keyboard.pinMode(P13, OUTPUT, LOW);
+  keyboard.pinMode(P14, OUTPUT, HIGH);
+  keyboard.pinMode(P15, OUTPUT, HIGH);
 
   keyboardInit = keyboard.begin();
 
