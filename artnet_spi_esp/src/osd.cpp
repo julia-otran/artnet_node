@@ -23,6 +23,7 @@ byte settings_mode_on;
 byte selected_setting;
 byte current_position;
 byte artnet_port_setting;
+uint8_t status_led_on;
 uint8_t next_setting = 0;
 uint8_t prev_setting = 0;
 uint8_t dotCount;
@@ -33,6 +34,10 @@ byte currentSymbolIndex;
 #define OSD_STATE_FPS 1
 #define OSD_STATE_SETTINGS 2
 #define OSD_STATE_WIFI ((uint8_t)0xF0)
+
+uint8_t OSD_BACKLIGHT_LED_ARR[2] = { P14, P15 };
+
+#define OSD_STATUS_LED P13
 
 byte ARROW_CHAR[] = {
   B00100,
@@ -218,8 +223,35 @@ void loadWiFiSettings() {
   }
 }
 
+void osd_update_backlight() {
+  if (current_settings.backlight_off == 0) {
+    lcd.backlight();
+
+    keyboard.digitalWrite(OSD_STATUS_LED, status_led_on);
+    
+    for (uint8_t i = 0; i < sizeof(OSD_BACKLIGHT_LED_ARR); i++) {
+      keyboard.digitalWrite(OSD_BACKLIGHT_LED_ARR[i], LOW);
+    }
+  } else {
+    lcd.noBacklight();
+
+    keyboard.digitalWrite(OSD_STATUS_LED, LOW);
+
+    for (uint8_t i = 0; i < sizeof(OSD_BACKLIGHT_LED_ARR); i++) {
+      keyboard.digitalWrite(OSD_BACKLIGHT_LED_ARR[i], LOW);
+    }
+  }
+}
+
+void osd_set_running(uint8_t running) {
+  status_led_on = running;
+  osd_update_backlight();
+}
+
 void osd_init() {
   EEPROM.begin(sizeof(Settings));
+
+  loadEEPROM();
 
   Wire.begin();
   Wire.setClock(100000);
@@ -228,19 +260,27 @@ void osd_init() {
     keyboard.pinMode(pin, INPUT_PULLUP);
   }
 
-  keyboard.pinMode(P13, OUTPUT, LOW);
-  keyboard.pinMode(P14, OUTPUT, HIGH);
-  keyboard.pinMode(P15, OUTPUT, HIGH);
+  keyboard.pinMode(OSD_STATUS_LED, OUTPUT, LOW);
+
+  for (uint8_t i = 0; i < sizeof(OSD_BACKLIGHT_LED_ARR); i++) {
+    keyboard.pinMode(OSD_BACKLIGHT_LED_ARR[i], OUTPUT, LOW);
+  }
 
   keyboardInit = keyboard.begin();
 
   lcd.begin(LCD_COLUMN_COUNT, 4);
+
+  if (current_settings.backlight_off == 1) {
+    lcd.noBacklight();
+  }
+
   lcd.createChar(0, ARROW_CHAR);
   lcd.createChar(1, ENTER_CHAR);
   lcd.createChar(2, CHECK_CHAR);
   lcd.createChar(3, BOTTOM_CHAR);
   lcd.setContrast(0x0F);
   lcd.clear();
+
   lcd.print("JSLC");
   lcd.setCursor(0, 1);
   lcd.print("ArtNet to DMX512");
@@ -267,10 +307,9 @@ void osd_init() {
       break;
     }
   }
-  
-  loadEEPROM();
 
   loadWiFiSettings();
+  osd_update_backlight();
 }
 
 String large_string_scroll;
@@ -365,7 +404,7 @@ void osd_print_wifi_stat(wl_status_t status) {
     return;
   }
 
-  keyboard.digitalWrite(13, LOW);
+  osd_set_running(0);
 
   if (millis() - wifiStatPrintMillis > 250) {
     if ((osd_state >> 8) != (status + 1)) {
@@ -432,7 +471,7 @@ void osd_print_default() {
   }
 
   if (osd_state != OSD_STATE_FPS) {
-    keyboard.digitalWrite(13, HIGH);
+    osd_set_running(1);
 
     lcd.clear();
     osd_state = OSD_STATE_FPS;
@@ -740,7 +779,21 @@ void osd_process_change_setting() {
       current_settings.static_ip[ipIndex] += inc;
       settings_mode_on = 1;
     }
-  }  
+  }
+
+  if (selected_setting == 12) {
+    int8_t inc = encoder_value();
+
+    bool backlightOff = current_settings.backlight_off;
+
+    if (inc) {
+      backlightOff = !backlightOff;
+
+      current_settings.backlight_off = backlightOff;
+
+      osd_update_backlight();
+    }
+  }
 }
 
 uint8_t osd_settings_routine() {
@@ -770,6 +823,8 @@ uint8_t osd_settings_routine() {
     } else {
       settings_mode_on = 0;
       memcpy(&current_settings, &live_settings, sizeof(Settings));
+      osd_update_backlight();
+
       return 0;
     }
 
@@ -818,7 +873,8 @@ uint8_t osd_settings_routine() {
   }
 
   osd_state = OSD_STATE_SETTINGS;
-  keyboard.digitalWrite(13, LOW);
+  osd_set_running(0);
+
   settings_mode_on = 2;
 
   lcd.clear();
@@ -863,6 +919,11 @@ uint8_t osd_settings_routine() {
       next_setting = 9;
     }
 
+    if (current_position == 5) {
+      lcd.print("> Backlight");
+      next_setting = 12;
+    }
+
     lcd.setCursor(0, 3);
     lcd.print("< Cancel | "); lcd.write(0); lcd.print(" Sw OP");
   }
@@ -874,11 +935,11 @@ uint8_t osd_settings_routine() {
 
     lcd.setCursor(0, 2);
 
-    if (current_position <= 5) {    
+    if (current_position <= 6) {    
       lcd.print("... MORE ...");
     } else {
       lcd.print("--- END ---");
-      current_position = 6;
+      current_position = 7;
     }
 
     lcd.setCursor(0, 1);
@@ -1244,6 +1305,23 @@ uint8_t osd_settings_routine() {
     }
 
     lcd.cursor();
+  }
+
+  if (selected_setting == 12) {
+    prev_setting = 0;
+    lcd.setCursor(0, 0);
+    lcd.print("Set backlight:");
+
+    lcd.setCursor(0, 1);
+
+    if (current_position == 0) {
+      lcd.print("    [On] |  Off ");
+    } else {
+      lcd.print("     On  | [Off]");
+    }
+
+    lcd.setCursor(0, 3);
+    lcd.print("< Sett | +/- Change");
   }
 
   lcd.display();

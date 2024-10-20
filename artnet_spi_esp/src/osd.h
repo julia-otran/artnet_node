@@ -10,6 +10,7 @@ typedef struct {
   byte artnet_subnet;
   byte port_mapping[4];
   byte output_channels;
+  byte backlight_off;
 } Settings;
 
 Settings* osd_get_settings();
