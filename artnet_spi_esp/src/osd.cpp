@@ -109,11 +109,11 @@ uint8_t is_key_set(uint8_t key) {
 }
 
 uint8_t key_left_set() {
-  return is_key_set(0);
+  return is_key_set(1);
 }
 
 uint8_t key_right_set() {
-  return is_key_set(1);
+  return is_key_set(0);
 }
 
 uint8_t key_up_set() {
@@ -230,7 +230,7 @@ void osd_update_backlight() {
     keyboard.digitalWrite(OSD_STATUS_LED, status_led_on);
     
     for (uint8_t i = 0; i < sizeof(OSD_BACKLIGHT_LED_ARR); i++) {
-      keyboard.digitalWrite(OSD_BACKLIGHT_LED_ARR[i], LOW);
+      keyboard.digitalWrite(OSD_BACKLIGHT_LED_ARR[i], HIGH);
     }
   } else {
     lcd.noBacklight();
@@ -297,7 +297,9 @@ void osd_init() {
   while (millis() - currentTime < 1750) {
     if (keyboardInit && key_left_set()) {
       memset(&current_settings, 0, sizeof(Settings));
-      memset(&live_settings, 0, sizeof(Settings));
+
+      memcpy(&live_settings, &current_settings, sizeof(Settings));
+
       saveEEPROM();
 
       lcd.setCursor(0, 3);
@@ -517,15 +519,15 @@ void encoder_read() {
 int8_t encoder_value() {
   int8_t encoder_last_read = 0;
 
-  bool encoder1 = keyboard.digitalRead(4, true);
-  bool encoder2 = keyboard.digitalRead(5);
+  bool encoder2 = keyboard.digitalRead(4, true);
+  bool encoder1 = keyboard.digitalRead(5);
 
-  if (encoder1 != last_encoder1 && encoder1 == encoder2) {
-    encoder_last_read++;
-  }
-
-  if (encoder1 != last_encoder1 && encoder1 != encoder2) {
-    encoder_last_read--;
+  if (last_encoder1 == 1 && encoder1 == 0) {
+    if (encoder2 == 1) {
+      encoder_last_read++;
+    } else {
+      encoder_last_read--;
+    }
   }
 
   last_encoder1 = encoder1;
