@@ -35,9 +35,12 @@ byte currentSymbolIndex;
 #define OSD_STATE_SETTINGS 2
 #define OSD_STATE_WIFI ((uint8_t)0xF0)
 
-uint8_t OSD_BACKLIGHT_LED_ARR[2] = { P14, P15 };
+uint8_t OSD_BACKLIGHT_LED_ARR[2] = { P12, P13 };
 
-#define OSD_STATUS_LED P13
+#define OSD_STATUS_LED P11
+
+#define LED_LEVEL_ON LOW
+#define LED_LEVEL_OFF HIGH
 
 byte ARROW_CHAR[] = {
   B00100,
@@ -227,18 +230,22 @@ void osd_update_backlight() {
   if (current_settings.backlight_off == 0) {
     lcd.backlight();
 
-    keyboard.digitalWrite(OSD_STATUS_LED, status_led_on);
+    if (status_led_on) {
+      keyboard.digitalWrite(OSD_STATUS_LED, LED_LEVEL_ON);
+    } else {
+      keyboard.digitalWrite(OSD_STATUS_LED, LED_LEVEL_OFF);
+    }
     
     for (uint8_t i = 0; i < sizeof(OSD_BACKLIGHT_LED_ARR); i++) {
-      keyboard.digitalWrite(OSD_BACKLIGHT_LED_ARR[i], HIGH);
+      keyboard.digitalWrite(OSD_BACKLIGHT_LED_ARR[i], LED_LEVEL_ON);
     }
   } else {
     lcd.noBacklight();
 
-    keyboard.digitalWrite(OSD_STATUS_LED, LOW);
+    keyboard.digitalWrite(OSD_STATUS_LED, LED_LEVEL_OFF);
 
     for (uint8_t i = 0; i < sizeof(OSD_BACKLIGHT_LED_ARR); i++) {
-      keyboard.digitalWrite(OSD_BACKLIGHT_LED_ARR[i], LOW);
+      keyboard.digitalWrite(OSD_BACKLIGHT_LED_ARR[i], LED_LEVEL_OFF);
     }
   }
 }
@@ -263,7 +270,7 @@ void osd_init() {
   keyboard.pinMode(OSD_STATUS_LED, OUTPUT, LOW);
 
   for (uint8_t i = 0; i < sizeof(OSD_BACKLIGHT_LED_ARR); i++) {
-    keyboard.pinMode(OSD_BACKLIGHT_LED_ARR[i], OUTPUT, LOW);
+    keyboard.pinMode(OSD_BACKLIGHT_LED_ARR[i], OUTPUT, LED_LEVEL_OFF);
   }
 
   keyboardInit = keyboard.begin();
@@ -890,13 +897,13 @@ uint8_t osd_settings_routine() {
 
     lcd.setCursor(0, 2);
 
-    if (current_position <= 3) {    
+    if (current_position <= 4) {    
       lcd.write(1);
       lcd.print(" Save   | . MORE .");
     } else {
       lcd.write(1);
       lcd.print(" Save   | - END -");
-      current_position = 4;
+      current_position = 5;
     }
 
     lcd.setCursor(0, 1);
